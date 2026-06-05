@@ -1,9 +1,15 @@
 [project]
 name = "labpartner"
 version = "0.1.0"
-description = "Add your description here"
+description = "Privacy-first medical lab report summarizer for the HuggingFace x Modal Hackathon"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "accelerate>=1.8.0",
+    "gradio>=5.0.0",
+    "httpx>=0.28.0",
     "modal>=1.4.3",
+    "pdfplumber>=0.11.0",
+    "torch",
+    "transformers>=4.50.0",
 ]

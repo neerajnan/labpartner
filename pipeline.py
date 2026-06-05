@@ -1,0 +1,211 @@
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+import re
+from typing import Any
+
+import pdfplumber
+
+
+ALLOWED_FINDING_STATUSES = {"abnormal", "borderline"}
+
+
+def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+    """Extract text from a digital PDF."""
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        page_text = [page.extract_text() or "" for page in pdf.pages]
+    return "\n".join(text for text in page_text if text).strip()
+
+
+def build_extraction_prompt(report_text: str) -> str:
+    return f"""You are a clinical information extraction system.
+
+Extract all findings from the following medical lab report and return ONLY a JSON object.
+
+JSON schema:
+{{
+  "findings": [
+    {{
+      "name": "finding name (e.g. HbA1c)",
+      "value": "reported value with unit (e.g. 9.2%)",
+      "reference_range": "normal range if mentioned",
+      "status": "normal | abnormal | borderline",
+      "search_term": "short clinical term for PubMed search (e.g. HbA1c elevated diabetes)"
+    }}
+  ]
+}}
+
+Return only the JSON. No explanation. No markdown.
+
+Report:
+{report_text}
+"""
+
+
+def build_summary_prompt(findings: dict[str, Any], pubmed_context: dict[str, Any]) -> str:
+    findings_json = json.dumps(findings, indent=2)
+    context_json = json.dumps(pubmed_context, indent=2)
+    return f"""You are a medical report interpreter helping a patient understand their lab results.
+
+You have the following extracted findings:
+{findings_json}
+
+You have the following reference context from medical literature:
+{context_json}
+
+Write a plain-language summary for the patient. For each abnormal finding:
+1. Explain what it measures
+2. Explain what the abnormal value means
+3. Mention what a doctor might want to investigate further
+
+Use simple language. Avoid jargon. Do not diagnose. Do not recommend treatment.
+End with: "Please share this summary with your doctor."
+
+Format:
+- One paragraph per finding
+- A final "Overall Summary" paragraph
+"""
+
+
+def parse_json_object(raw_output: str) -> dict[str, Any]:
+    """Parse a model response that should contain a single JSON object."""
+    text = raw_output.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise
+        parsed = json.loads(text[start : end + 1])
+
+    if not isinstance(parsed, dict):
+        raise ValueError("Model output must be a JSON object.")
+    if not isinstance(parsed.get("findings"), list):
+        raise ValueError("Model output must include a findings array.")
+    return parsed
+
+
+def anonymize_for_pubmed(findings: dict[str, Any]) -> list[str]:
+    """Return only minimal clinical search terms for non-normal findings."""
+    terms = []
+    for finding in findings.get("findings", []):
+        if not isinstance(finding, dict):
+            continue
+        if finding.get("status") not in ALLOWED_FINDING_STATUSES:
+            continue
+        term = str(finding.get("search_term", "")).strip()
+        if term:
+            terms.append(term)
+    return terms
+
+
+def run_async(coro):
+    """Run async PubMed code from a synchronous pipeline method."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    raise RuntimeError("run_async cannot be called from an active event loop")
+
+
+def format_sources(pubmed_context: dict[str, Any]) -> str:
+    """Render PubMed source links for the Gradio Markdown panel."""
+    lines = []
+    for term, context in pubmed_context.items():
+        urls = context.get("urls", []) if isinstance(context, dict) else []
+        if not urls:
+            continue
+        links = ", ".join(f"[PMID {url.rstrip('/').split('/')[-1]}]({url})" for url in urls)
+        lines.append(f"- **{term}**: {links}")
+    return "\n".join(lines) if lines else "No PubMed sources found."
+
+
+def mock_extract_findings(report_text: str) -> dict[str, Any]:
+    """Deterministic extraction for local UI development."""
+    text = report_text or ""
+    findings = []
+
+    patterns = [
+        ("HbA1c", r"\b(?:HbA1c|A1c)\b[^\d]*(\d+(?:\.\d+)?)\s*%?", "%", "4.0-5.6%", 5.7, "HbA1c elevated diabetes"),
+        ("Glucose", r"\bGlucose\b[^\d]*(\d+(?:\.\d+)?)\s*(?:mg/dL)?", "mg/dL", "70-99 mg/dL", 100.0, "fasting glucose elevated"),
+        ("LDL Cholesterol", r"\bLDL\b[^\d]*(\d+(?:\.\d+)?)\s*(?:mg/dL)?", "mg/dL", "<100 mg/dL", 100.0, "LDL cholesterol elevated"),
+        ("eGFR", r"\beGFR\b[^\d]*(\d+(?:\.\d+)?)", "mL/min/1.73m2", ">=90 mL/min/1.73m2", 90.0, "eGFR reduced kidney function"),
+    ]
+
+    for name, pattern, unit, reference_range, threshold, search_term in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        value = float(match.group(1))
+        is_low_marker = name == "eGFR"
+        abnormal = value < threshold if is_low_marker else value >= threshold
+        findings.append(
+            {
+                "name": name,
+                "value": f"{value:g} {unit}",
+                "reference_range": reference_range,
+                "status": "abnormal" if abnormal else "normal",
+                "search_term": search_term if abnormal else "",
+            }
+        )
+
+    if not findings:
+        findings.append(
+            {
+                "name": "Example finding",
+                "value": "Not detected by mock parser",
+                "reference_range": "",
+                "status": "borderline",
+                "search_term": "lab result interpretation",
+            }
+        )
+
+    return {"findings": findings}
+
+
+def mock_summarize(findings: dict[str, Any], pubmed_context: dict[str, Any]) -> str:
+    paragraphs = []
+    for finding in findings.get("findings", []):
+        if finding.get("status") == "normal":
+            continue
+        name = finding.get("name", "This finding")
+        value = finding.get("value", "the reported value")
+        paragraphs.append(
+            f"{name} was reported as {value}. This result was marked {finding.get('status', 'non-normal')}. "
+            "A doctor may want to interpret it alongside your symptoms, medical history, medications, and other lab results."
+        )
+
+    if not paragraphs:
+        paragraphs.append("No abnormal findings were detected by the current parser.")
+
+    paragraphs.append(
+        "Overall Summary: This summary is intended to make the report easier to discuss with a clinician, not to diagnose or treat a condition. "
+        "Please share this summary with your doctor."
+    )
+    return "\n\n".join(paragraphs)
+
+
+def run_mock_pipeline(pdf_bytes: bytes) -> dict[str, Any]:
+    report_text = extract_text_from_pdf(pdf_bytes)
+    findings = mock_extract_findings(report_text)
+    search_terms = anonymize_for_pubmed(findings)
+    pubmed_context = {
+        term: {
+            "pmids": [],
+            "abstracts": "Mock PubMed context for local development.",
+            "urls": [],
+        }
+        for term in search_terms
+    }
+    return {
+        "findings": findings,
+        "summary": mock_summarize(findings, pubmed_context),
+        "sources": format_sources(pubmed_context),
+    }

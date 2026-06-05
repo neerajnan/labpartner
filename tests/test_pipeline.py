@@ -1,0 +1,68 @@
+import unittest
+
+from pipeline import extract_text_from_pdf, run_mock_pipeline
+
+
+def make_text_pdf(text: str) -> bytes:
+    escaped_text = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    content = f"BT /F1 12 Tf 72 720 Td ({escaped_text}) Tj ET".encode()
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length "
+        + str(len(content)).encode()
+        + b" >>\nstream\n"
+        + content
+        + b"\nendstream",
+    ]
+
+    chunks = [b"%PDF-1.4\n"]
+    offsets = [0]
+    for index, body in enumerate(objects, start=1):
+        offsets.append(sum(len(chunk) for chunk in chunks))
+        chunks.append(f"{index} 0 obj\n".encode() + body + b"\nendobj\n")
+
+    xref_offset = sum(len(chunk) for chunk in chunks)
+    xref = [b"xref\n0 6\n", b"0000000000 65535 f \n"]
+    xref.extend(f"{offset:010d} 00000 n \n".encode() for offset in offsets[1:])
+    chunks.extend(
+        [
+            *xref,
+            b"trailer\n<< /Size 6 /Root 1 0 R >>\n",
+            b"startxref\n",
+            str(xref_offset).encode(),
+            b"\n%%EOF\n",
+        ]
+    )
+    return b"".join(chunks)
+
+
+class PipelineTest(unittest.TestCase):
+    def test_extract_text_from_synthetic_pdf(self):
+        pdf_bytes = make_text_pdf("HbA1c 7.2% LDL 130 mg/dL eGFR 82")
+
+        extracted_text = extract_text_from_pdf(pdf_bytes)
+
+        self.assertIn("HbA1c 7.2%", extracted_text)
+        self.assertIn("LDL 130", extracted_text)
+        self.assertIn("eGFR 82", extracted_text)
+
+    def test_mock_pipeline_flags_synthetic_lab_values(self):
+        pdf_bytes = make_text_pdf("Patient: Example Person HbA1c 7.2% LDL 130 mg/dL eGFR 82")
+
+        result = run_mock_pipeline(pdf_bytes)
+
+        finding_statuses = {
+            finding["name"]: finding["status"] for finding in result["findings"]["findings"]
+        }
+        self.assertEqual(finding_statuses["HbA1c"], "abnormal")
+        self.assertEqual(finding_statuses["LDL Cholesterol"], "abnormal")
+        self.assertEqual(finding_statuses["eGFR"], "abnormal")
+        self.assertIn("Please share this summary with your doctor.", result["summary"])
+
+
+if __name__ == "__main__":
+    unittest.main()
