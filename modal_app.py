@@ -59,11 +59,11 @@ class LabPartner:
         return self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
     def _extract_findings_impl(self, report_text: str) -> dict:
-        from pipeline import build_extraction_prompt, parse_json_object
+        from pipeline import build_extraction_prompt, normalize_findings, parse_json_object
 
         prompt = build_extraction_prompt(report_text)
         raw_output = self._generate(prompt, max_new_tokens=1200)
-        return parse_json_object(raw_output)
+        return normalize_findings(parse_json_object(raw_output))
 
     def _summarize_impl(self, findings: dict, pubmed_context: dict) -> str:
         from pipeline import build_summary_prompt

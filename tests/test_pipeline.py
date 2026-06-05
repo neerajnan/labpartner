@@ -1,6 +1,12 @@
 import unittest
 
-from pipeline import extract_text_from_pdf, run_mock_pipeline
+from pipeline import (
+    anonymize_for_pubmed,
+    build_summary_prompt,
+    extract_text_from_pdf,
+    normalize_findings,
+    run_mock_pipeline,
+)
 
 
 def make_text_pdf(text: str) -> bytes:
@@ -62,6 +68,60 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(finding_statuses["LDL Cholesterol"], "abnormal")
         self.assertEqual(finding_statuses["eGFR"], "abnormal")
         self.assertIn("Please share this summary with your doctor.", result["summary"])
+
+    def test_reference_range_normalization_clears_in_range_urine_ratio(self):
+        extracted = {
+            "findings": [
+                {
+                    "name": "Urine Protein/Creatinine Ratio",
+                    "value": "0.04",
+                    "reference_range": "<0.20",
+                    "status": "abnormal",
+                    "search_term": "low urine protein creatinine ratio kidney function",
+                },
+                {
+                    "name": "Urine Protein",
+                    "value": "1.12 mg/dL",
+                    "reference_range": "1-14 mg/dL",
+                    "status": "normal",
+                    "search_term": "",
+                },
+            ]
+        }
+
+        normalized = normalize_findings(extracted)
+
+        ratio = normalized["findings"][0]
+        self.assertEqual(ratio["status"], "normal")
+        self.assertEqual(ratio["search_term"], "")
+        self.assertEqual(anonymize_for_pubmed(normalized), [])
+
+    def test_summary_prompt_excludes_normal_findings(self):
+        findings = normalize_findings(
+            {
+                "findings": [
+                    {
+                        "name": "Urine Protein/Creatinine Ratio",
+                        "value": "0.04",
+                        "reference_range": "<0.20",
+                        "status": "abnormal",
+                        "search_term": "low urine protein creatinine ratio kidney function",
+                    },
+                    {
+                        "name": "LDL",
+                        "value": "130 mg/dL",
+                        "reference_range": "<100 mg/dL",
+                        "status": "abnormal",
+                        "search_term": "LDL elevated cardiovascular risk",
+                    },
+                ]
+            }
+        )
+
+        prompt = build_summary_prompt(findings, {})
+
+        self.assertNotIn("Urine Protein/Creatinine Ratio", prompt)
+        self.assertIn("LDL", prompt)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import re
+from copy import deepcopy
 from typing import Any
 
 import pdfplumber
@@ -39,28 +40,36 @@ JSON schema:
 
 Return only the JSON. No explanation. No markdown.
 
+Rules:
+- Use the report's stated reference range when deciding status.
+- If a numeric value is within the stated reference range, set status to "normal".
+- Do not mark low urine protein/creatinine ratio as abnormal unless the report explicitly flags it or it is outside the stated reference range.
+- If status is "normal", leave search_term as an empty string.
+
 Report:
 {report_text}
 """
 
 
 def build_summary_prompt(findings: dict[str, Any], pubmed_context: dict[str, Any]) -> str:
-    findings_json = json.dumps(findings, indent=2)
+    findings_json = json.dumps(filter_findings_for_summary(findings), indent=2)
     context_json = json.dumps(pubmed_context, indent=2)
     return f"""You are a medical report interpreter helping a patient understand their lab results.
 
-You have the following extracted findings:
+You have the following non-normal extracted findings. These are the ONLY findings to summarize:
 {findings_json}
 
 You have the following reference context from medical literature:
 {context_json}
 
-Write a plain-language summary for the patient. For each abnormal finding:
+Write a plain-language summary for the patient. For each abnormal or borderline finding:
 1. Explain what it measures
 2. Explain what the abnormal value means
 3. Mention what a doctor might want to investigate further
 
 Use simple language. Avoid jargon. Do not diagnose. Do not recommend treatment.
+Do not invent concern for values marked normal or values that are within the stated reference range.
+Do not say that a low urine protein/creatinine ratio suggests kidney dysfunction unless the report explicitly flags it as abnormal or it is outside the stated reference range.
 End with: "Please share this summary with your doctor."
 
 Format:
@@ -90,6 +99,94 @@ def parse_json_object(raw_output: str) -> dict[str, Any]:
     if not isinstance(parsed.get("findings"), list):
         raise ValueError("Model output must include a findings array.")
     return parsed
+
+
+def normalize_findings(findings: dict[str, Any]) -> dict[str, Any]:
+    """Apply deterministic status corrections from numeric reference ranges."""
+    normalized = deepcopy(findings)
+    for finding in normalized.get("findings", []):
+        if not isinstance(finding, dict):
+            continue
+        range_status = status_from_reference_range(
+            str(finding.get("value", "")),
+            finding.get("reference_range"),
+        )
+        if not range_status:
+            continue
+        finding["status"] = range_status
+        if range_status == "normal":
+            finding["search_term"] = ""
+    return normalized
+
+
+def filter_findings_for_summary(findings: dict[str, Any]) -> dict[str, Any]:
+    """Return only findings the summary model is allowed to discuss as non-normal."""
+    return {
+        "findings": [
+            finding
+            for finding in findings.get("findings", [])
+            if isinstance(finding, dict) and finding.get("status") in ALLOWED_FINDING_STATUSES
+        ]
+    }
+
+
+def status_from_reference_range(value: str, reference_range: Any) -> str | None:
+    """Infer normal/abnormal status for simple numeric lab ranges."""
+    numeric_value = first_number(value)
+    if numeric_value is None or reference_range in {None, ""}:
+        return None
+
+    range_text = str(reference_range)
+    bounds = parse_reference_range(range_text)
+    if bounds is None:
+        return None
+
+    low, high, low_inclusive, high_inclusive = bounds
+    below_low = low is not None and (
+        numeric_value < low if low_inclusive else numeric_value <= low
+    )
+    above_high = high is not None and (
+        numeric_value > high if high_inclusive else numeric_value >= high
+    )
+    return "abnormal" if below_low or above_high else "normal"
+
+
+def parse_reference_range(reference_range: str) -> tuple[float | None, float | None, bool, bool] | None:
+    """Parse common lab ranges such as 1-14, <100, <=5.6, >90, and >=90."""
+    text = reference_range.replace("–", "-").replace("—", "-").strip()
+
+    between_match = re.search(
+        r"(-?\d+(?:\.\d+)?)\s*(?:-|to)\s*(-?\d+(?:\.\d+)?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if between_match:
+        low = float(between_match.group(1))
+        high = float(between_match.group(2))
+        if low > high:
+            low, high = high, low
+        return low, high, True, True
+
+    upper_match = re.search(r"(<=|<|less than|under)\s*(-?\d+(?:\.\d+)?)", text, flags=re.IGNORECASE)
+    if upper_match:
+        operator = upper_match.group(1).lower()
+        return None, float(upper_match.group(2)), True, operator in {"<=", "less than", "under"}
+
+    lower_match = re.search(
+        r"(>=|>|greater than|over|at least)\s*(-?\d+(?:\.\d+)?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if lower_match:
+        operator = lower_match.group(1).lower()
+        return float(lower_match.group(2)), None, operator in {">=", "greater than", "over", "at least"}, True
+
+    return None
+
+
+def first_number(text: str) -> float | None:
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    return float(match.group(0)) if match else None
 
 
 def anonymize_for_pubmed(findings: dict[str, Any]) -> list[str]:
@@ -172,9 +269,7 @@ def mock_extract_findings(report_text: str) -> dict[str, Any]:
 
 def mock_summarize(findings: dict[str, Any], pubmed_context: dict[str, Any]) -> str:
     paragraphs = []
-    for finding in findings.get("findings", []):
-        if finding.get("status") == "normal":
-            continue
+    for finding in filter_findings_for_summary(findings).get("findings", []):
         name = finding.get("name", "This finding")
         value = finding.get("value", "the reported value")
         paragraphs.append(
@@ -194,7 +289,7 @@ def mock_summarize(findings: dict[str, Any], pubmed_context: dict[str, Any]) -> 
 
 def run_mock_pipeline(pdf_bytes: bytes) -> dict[str, Any]:
     report_text = extract_text_from_pdf(pdf_bytes)
-    findings = mock_extract_findings(report_text)
+    findings = normalize_findings(mock_extract_findings(report_text))
     search_terms = anonymize_for_pubmed(findings)
     pubmed_context = {
         term: {
