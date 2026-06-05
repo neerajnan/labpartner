@@ -11,6 +11,7 @@ import pdfplumber
 
 
 ALLOWED_FINDING_STATUSES = {"abnormal", "borderline"}
+EXPLICIT_NON_NORMAL_FLAGS = {"h", "high", "l", "low", "a", "abnormal", "borderline"}
 
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
@@ -32,8 +33,9 @@ JSON schema:
       "name": "finding name (e.g. HbA1c)",
       "value": "reported value with unit (e.g. 9.2%)",
       "reference_range": "normal range if mentioned",
-      "status": "normal | abnormal | borderline",
-      "search_term": "short clinical term for PubMed search (e.g. HbA1c elevated diabetes)"
+      "report_flag": "explicit flag shown in the report, e.g. H, L, High, Low, Abnormal, or null",
+      "status": "normal | abnormal | borderline | unknown",
+      "search_term": "short clinical term for PubMed search, using high/low/elevated/reduced only when supported by the report"
     }}
   ]
 }}
@@ -43,7 +45,9 @@ Return only the JSON. No explanation. No markdown.
 Rules:
 - Use the report's stated reference range when deciding status.
 - If a numeric value is within the stated reference range, set status to "normal".
-- Do not mark low urine protein/creatinine ratio as abnormal unless the report explicitly flags it or it is outside the stated reference range.
+- If the report does not provide a usable reference range or explicit abnormal flag, set status to "unknown".
+- Do not infer high, low, elevated, or reduced from the numeric value alone.
+- For unknown status, use a neutral search_term based on the test name only, with no high/low/elevated/reduced direction.
 - If status is "normal", leave search_term as an empty string.
 
 Report:
@@ -107,14 +111,26 @@ def normalize_findings(findings: dict[str, Any]) -> dict[str, Any]:
     for finding in normalized.get("findings", []):
         if not isinstance(finding, dict):
             continue
+        finding.setdefault("report_flag", None)
         range_status = status_from_reference_range(
             str(finding.get("value", "")),
             finding.get("reference_range"),
         )
-        if not range_status:
+        if range_status:
+            finding["status"] = range_status
+            if range_status == "normal":
+                finding["search_term"] = ""
             continue
-        finding["status"] = range_status
-        if range_status == "normal":
+
+        if has_explicit_non_normal_flag(finding.get("report_flag")):
+            if finding.get("status") not in ALLOWED_FINDING_STATUSES:
+                finding["status"] = "abnormal"
+            continue
+
+        if finding.get("status") in ALLOWED_FINDING_STATUSES:
+            finding["status"] = "unknown"
+            finding["search_term"] = neutral_search_term(finding)
+        elif finding.get("status") == "normal":
             finding["search_term"] = ""
     return normalized
 
@@ -149,6 +165,19 @@ def status_from_reference_range(value: str, reference_range: Any) -> str | None:
         numeric_value > high if high_inclusive else numeric_value >= high
     )
     return "abnormal" if below_low or above_high else "normal"
+
+
+def has_explicit_non_normal_flag(report_flag: Any) -> bool:
+    if report_flag in {None, ""}:
+        return False
+    return str(report_flag).strip().lower() in EXPLICIT_NON_NORMAL_FLAGS
+
+
+def neutral_search_term(finding: dict[str, Any]) -> str:
+    name = str(finding.get("name", "")).strip()
+    if name:
+        return name.lower()
+    return ""
 
 
 def parse_reference_range(reference_range: str) -> tuple[float | None, float | None, bool, bool] | None:

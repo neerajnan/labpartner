@@ -76,6 +76,7 @@ class PipelineTest(unittest.TestCase):
                     "name": "Urine Protein/Creatinine Ratio",
                     "value": "0.04",
                     "reference_range": "<0.20",
+                    "report_flag": None,
                     "status": "abnormal",
                     "search_term": "low urine protein creatinine ratio kidney function",
                 },
@@ -83,6 +84,7 @@ class PipelineTest(unittest.TestCase):
                     "name": "Urine Protein",
                     "value": "1.12 mg/dL",
                     "reference_range": "1-14 mg/dL",
+                    "report_flag": None,
                     "status": "normal",
                     "search_term": "",
                 },
@@ -104,6 +106,7 @@ class PipelineTest(unittest.TestCase):
                         "name": "Urine Protein/Creatinine Ratio",
                         "value": "0.04",
                         "reference_range": "<0.20",
+                        "report_flag": None,
                         "status": "abnormal",
                         "search_term": "low urine protein creatinine ratio kidney function",
                     },
@@ -111,6 +114,7 @@ class PipelineTest(unittest.TestCase):
                         "name": "LDL",
                         "value": "130 mg/dL",
                         "reference_range": "<100 mg/dL",
+                        "report_flag": None,
                         "status": "abnormal",
                         "search_term": "LDL elevated cardiovascular risk",
                     },
@@ -122,6 +126,48 @@ class PipelineTest(unittest.TestCase):
 
         self.assertNotIn("Urine Protein/Creatinine Ratio", prompt)
         self.assertIn("LDL", prompt)
+
+    def test_missing_reference_range_does_not_infer_low_or_high(self):
+        extracted = {
+            "findings": [
+                {
+                    "name": "URINE PROTEIN/CREATININE RATIO",
+                    "value": "0.04",
+                    "reference_range": "-",
+                    "report_flag": None,
+                    "status": "abnormal",
+                    "search_term": "urine protein creatinine ratio low",
+                }
+            ]
+        }
+
+        normalized = normalize_findings(extracted)
+
+        finding = normalized["findings"][0]
+        self.assertEqual(finding["status"], "unknown")
+        self.assertEqual(finding["search_term"], "urine protein/creatinine ratio")
+        self.assertEqual(anonymize_for_pubmed(normalized), [])
+
+    def test_explicit_report_flag_preserves_non_normal_without_range(self):
+        extracted = {
+            "findings": [
+                {
+                    "name": "LDL",
+                    "value": "130 mg/dL",
+                    "reference_range": "-",
+                    "report_flag": "H",
+                    "status": "abnormal",
+                    "search_term": "LDL cholesterol high",
+                }
+            ]
+        }
+
+        normalized = normalize_findings(extracted)
+
+        finding = normalized["findings"][0]
+        self.assertEqual(finding["status"], "abnormal")
+        self.assertEqual(finding["search_term"], "LDL cholesterol high")
+        self.assertEqual(anonymize_for_pubmed(normalized), ["LDL cholesterol high"])
 
 
 if __name__ == "__main__":
