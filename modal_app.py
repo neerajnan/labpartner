@@ -41,7 +41,7 @@ class LabPartner:
             MODEL_ID,
             token=token,
             device_map="auto",
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
         )
 
     def _generate(self, prompt: str, max_new_tokens: int) -> str:
