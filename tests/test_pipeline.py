@@ -6,6 +6,7 @@ from pipeline import (
     extract_text_from_pdf,
     normalize_findings,
     run_mock_pipeline,
+    summarize_without_non_normal_findings,
 )
 
 
@@ -168,6 +169,47 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(finding["status"], "abnormal")
         self.assertEqual(finding["search_term"], "LDL cholesterol high")
         self.assertEqual(anonymize_for_pubmed(normalized), ["LDL cholesterol high"])
+
+    def test_no_non_normal_summary_is_deterministic_and_has_no_patient_hallucination(self):
+        findings = normalize_findings(
+            {
+                "findings": [
+                    {
+                        "name": "URINE PROTEIN/CREATININE RATIO",
+                        "value": "0.04",
+                        "reference_range": None,
+                        "report_flag": None,
+                        "status": "abnormal",
+                        "search_term": "urine protein creatinine ratio low",
+                    },
+                    {
+                        "name": "URINE PROTEIN",
+                        "value": "1.12 mg/dL",
+                        "reference_range": "1-14 mg/dL",
+                        "report_flag": None,
+                        "status": "normal",
+                        "search_term": "urine protein normal",
+                    },
+                    {
+                        "name": "URINE CREATININE",
+                        "value": "26 mg/dL",
+                        "reference_range": "14.71-294.12 mg/dL",
+                        "report_flag": None,
+                        "status": "normal",
+                        "search_term": "urine creatinine normal",
+                    },
+                ]
+            }
+        )
+
+        summary = summarize_without_non_normal_findings(findings)
+
+        self.assertIn("No abnormal or borderline findings", summary)
+        self.assertIn("URINE PROTEIN/CREATININE RATIO", summary)
+        self.assertIn("Please share this summary with your doctor.", summary)
+        self.assertNotIn("John Smith", summary)
+        self.assertNotIn("Patient ID", summary)
+        self.assertNotIn("Date of Report", summary)
 
 
 if __name__ == "__main__":

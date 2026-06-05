@@ -81,14 +81,25 @@ class LabPartner:
 
     @modal.method()
     def run_pipeline(self, pdf_bytes: bytes) -> dict:
-        from pipeline import anonymize_for_pubmed, extract_text_from_pdf, format_sources, run_async
+        from pipeline import (
+            anonymize_for_pubmed,
+            extract_text_from_pdf,
+            format_sources,
+            has_findings_for_summary,
+            run_async,
+            summarize_without_non_normal_findings,
+        )
         from pubmed import get_context_for_findings
 
         report_text = extract_text_from_pdf(pdf_bytes)
         findings = self._extract_findings_impl(report_text)
         search_terms = anonymize_for_pubmed(findings)
         pubmed_context = run_async(get_context_for_findings(search_terms))
-        summary = self._summarize_impl(findings, pubmed_context)
+        summary = (
+            self._summarize_impl(findings, pubmed_context)
+            if has_findings_for_summary(findings)
+            else summarize_without_non_normal_findings(findings)
+        )
 
         return {
             "findings": findings,

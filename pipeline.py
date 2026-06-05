@@ -146,6 +146,38 @@ def filter_findings_for_summary(findings: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def has_findings_for_summary(findings: dict[str, Any]) -> bool:
+    return bool(filter_findings_for_summary(findings)["findings"])
+
+
+def summarize_without_non_normal_findings(findings: dict[str, Any]) -> str:
+    """Return a deterministic summary when there is nothing safe to send to the model."""
+    unknown_names = [
+        str(finding.get("name", "a finding")).strip()
+        for finding in findings.get("findings", [])
+        if isinstance(finding, dict) and finding.get("status") == "unknown"
+    ]
+    unknown_names = [name for name in unknown_names if name]
+
+    paragraphs = [
+        "No abnormal or borderline findings were identified from the values that included a usable reference range or explicit report flag."
+    ]
+    if unknown_names:
+        if len(unknown_names) == 1:
+            unknown_text = unknown_names[0]
+        else:
+            unknown_text = ", ".join(unknown_names[:-1]) + f", and {unknown_names[-1]}"
+        paragraphs.append(
+            f"The report also includes {unknown_text}, but it did not provide enough reference-range or flag information for LabPartner to classify it as normal or abnormal."
+        )
+
+    paragraphs.append(
+        "Overall Summary: Please review the full report with your doctor, especially any items your lab or clinician has flagged."
+    )
+    paragraphs.append("Please share this summary with your doctor.")
+    return "\n\n".join(paragraphs)
+
+
 def status_from_reference_range(value: str, reference_range: Any) -> str | None:
     """Infer normal/abnormal status for simple numeric lab ranges."""
     numeric_value = first_number(value)
@@ -297,6 +329,9 @@ def mock_extract_findings(report_text: str) -> dict[str, Any]:
 
 
 def mock_summarize(findings: dict[str, Any], pubmed_context: dict[str, Any]) -> str:
+    if not has_findings_for_summary(findings):
+        return summarize_without_non_normal_findings(findings)
+
     paragraphs = []
     for finding in filter_findings_for_summary(findings).get("findings", []):
         name = finding.get("name", "This finding")
