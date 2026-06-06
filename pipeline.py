@@ -134,7 +134,12 @@ def build_summary_prompt(findings: dict[str, Any], pubmed_context: dict[str, Any
 Return only the patient-facing summary. Do not include instructions, examples, drafts, analysis, placeholders, or markdown separators.
 
 Start with the heading "Lab Results Summary".
-After that heading, write one compact bullet per finding. Each bullet must be under 30 words and include the test name, value, reference range, and high/low/abnormal status.
+After that heading, write one bullet per finding.
+Each bullet must have exactly two short sentences:
+Sentence 1: include the test name, value, reference range, and high/low/abnormal status.
+Sentence 2: explain what this kind of abnormal result can suggest or may relate to in plain language.
+Do not write a bullet that only lists the value, reference range, and status.
+Use cautious wording such as "can be seen with", "may relate to", or "can suggest". Do not diagnose.
 Then write the heading "Overall Summary" and one short paragraph telling the patient to review these non-normal findings with their doctor.
 Use this exact final sentence: Please share this summary with your doctor.
 """

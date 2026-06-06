@@ -263,8 +263,12 @@ class PipelineTest(unittest.TestCase):
 
         prompt = build_summary_prompt(findings, {})
 
+        self.assertIn("exactly two short sentences", prompt)
         self.assertIn("include the test name, value, reference range", prompt)
-        self.assertIn("under 30 words", prompt)
+        self.assertIn("explain what this kind of abnormal result can suggest", prompt)
+        self.assertIn("Do not write a bullet that only lists", prompt)
+        self.assertIn("may relate to in plain language", prompt)
+        self.assertIn("Do not diagnose", prompt)
         self.assertIn("Return only the patient-facing summary", prompt)
         self.assertIn('"value": "70.2 %"', prompt)
         self.assertIn('"reference_range": "40-70 %"', prompt)
