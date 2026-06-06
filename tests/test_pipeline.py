@@ -8,6 +8,7 @@ from pipeline import (
     build_summary_prompt,
     clean_summary_output,
     extraction_error_findings,
+    extract_findings_from_report_text,
     extract_text_from_pdf,
     normalize_findings,
     pubmed_error_context,
@@ -63,6 +64,28 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("HbA1c 7.2%", extracted_text)
         self.assertIn("LDL 130", extracted_text)
         self.assertIn("eGFR 82", extracted_text)
+
+    def test_parser_extracts_and_validates_common_lab_rows(self):
+        report_text = """
+        NEUTROPHILS 70.2 % 40-70
+        EOSINOPHILS 0.5 % 1-6
+        URINE PROTEIN 1.12 mg/dL 1-14 mg/dL
+        URINE CREATININE 26 mg/dL 14.71-294.12 mg/dL
+        """
+
+        findings = extract_findings_from_report_text(report_text)
+
+        statuses = {finding["name"]: finding["status"] for finding in findings["findings"]}
+        self.assertEqual(statuses["NEUTROPHILS"], "abnormal")
+        self.assertEqual(statuses["EOSINOPHILS"], "abnormal")
+        self.assertEqual(statuses["URINE PROTEIN"], "normal")
+        self.assertEqual(statuses["URINE CREATININE"], "normal")
+
+    def test_parser_marks_missing_range_without_flag_as_unknown(self):
+        findings = extract_findings_from_report_text("URINE PROTEIN/CREATININE RATIO 0.04")
+
+        self.assertEqual(findings["findings"][0]["name"], "URINE PROTEIN/CREATININE RATIO")
+        self.assertEqual(findings["findings"][0]["status"], "unknown")
 
     def test_mock_pipeline_flags_synthetic_lab_values(self):
         pdf_bytes = make_text_pdf("Patient: Example Person HbA1c 7.2% LDL 130 mg/dL eGFR 82")

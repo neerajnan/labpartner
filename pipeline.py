@@ -14,6 +14,21 @@ import pdfplumber
 
 ALLOWED_FINDING_STATUSES = {"abnormal", "borderline"}
 EXPLICIT_NON_NORMAL_FLAGS = {"h", "high", "l", "low", "a", "abnormal", "borderline"}
+SKIP_LINE_PREFIXES = (
+    "patient",
+    "name",
+    "age",
+    "sex",
+    "gender",
+    "date",
+    "doctor",
+    "hospital",
+    "sample",
+    "specimen",
+    "report",
+    "page",
+)
+NUMBER_PATTERN = r"-?\d+(?:\.\d+)?"
 
 
 @contextmanager
@@ -76,14 +91,10 @@ Report:
 
 def build_summary_prompt(findings: dict[str, Any], pubmed_context: dict[str, Any]) -> str:
     findings_json = json.dumps(filter_findings_for_summary(findings), indent=2)
-    context_json = json.dumps(pubmed_context, indent=2)
     return f"""You are a medical report interpreter helping a patient understand their lab results.
 
 You have the following non-normal extracted findings. These are the ONLY findings to summarize:
 {findings_json}
-
-You have the following reference context from medical literature:
-{context_json}
 
 Write a plain-language summary for the patient. For each abnormal or borderline finding:
 1. Explain what it measures
@@ -184,6 +195,118 @@ def normalize_findings(findings: dict[str, Any]) -> dict[str, Any]:
         elif finding.get("status") == "normal":
             finding["search_term"] = ""
     return normalized
+
+
+def extract_findings_from_report_text(report_text: str) -> dict[str, Any]:
+    """Extract lab-like rows from report text without model inference."""
+    findings = []
+    seen = set()
+    for raw_line in report_text.splitlines():
+        finding = parse_lab_line(raw_line)
+        if not finding:
+            continue
+        key = (finding["name"].lower(), finding["value"].lower(), str(finding.get("reference_range")))
+        if key in seen:
+            continue
+        seen.add(key)
+        findings.append(finding)
+    return normalize_findings({"findings": findings})
+
+
+def parse_lab_line(raw_line: str) -> dict[str, Any] | None:
+    line = re.sub(r"\s+", " ", raw_line).strip()
+    if not should_parse_lab_line(line):
+        return None
+
+    reference_range, range_start, range_end = find_reference_range(line)
+    value_region = line[:range_start] if reference_range else line
+    report_flag = extract_report_flag(line)
+    value_match = last_number_match(value_region)
+    if not value_match:
+        return None
+
+    name = clean_finding_name(value_region[: value_match.start()])
+    if not is_plausible_finding_name(name):
+        return None
+
+    unit = clean_unit_text(value_region[value_match.end() :])
+    value = value_match.group(0)
+    if unit:
+        value = f"{value} {unit}"
+
+    if reference_range:
+        tail_after_range = line[range_end:].strip()
+        if not report_flag:
+            report_flag = extract_report_flag(tail_after_range)
+
+    initial_status = "abnormal" if has_explicit_non_normal_flag(report_flag) else "unknown"
+    search_term = neutral_search_term({"name": name}) if initial_status != "normal" else ""
+    return {
+        "name": name,
+        "value": value,
+        "reference_range": reference_range,
+        "report_flag": report_flag,
+        "status": initial_status,
+        "search_term": search_term,
+    }
+
+
+def should_parse_lab_line(line: str) -> bool:
+    if not line or not re.search(r"[A-Za-z]", line) or not re.search(NUMBER_PATTERN, line):
+        return False
+    lowered = line.lower().strip()
+    return not lowered.startswith(SKIP_LINE_PREFIXES)
+
+
+def find_reference_range(line: str) -> tuple[str | None, int, int]:
+    patterns = [
+        rf"(?P<range>{NUMBER_PATTERN}\s*(?:-|–|—|to)\s*{NUMBER_PATTERN}(?:\s*[A-Za-zµμ/%][A-Za-z0-9µμ/%.^-]*)?)",
+        rf"(?P<range>(?:<=|>=|<|>|≤|≥)\s*{NUMBER_PATTERN}(?:\s*[A-Za-zµμ/%][A-Za-z0-9µμ/%.^-]*)?)",
+    ]
+    matches = []
+    for pattern in patterns:
+        matches.extend(re.finditer(pattern, line, flags=re.IGNORECASE))
+    if not matches:
+        return None, len(line), len(line)
+    match = max(matches, key=lambda item: item.start())
+    return match.group("range").strip(), match.start(), match.end()
+
+
+def extract_report_flag(text: str) -> str | None:
+    for token in re.findall(r"\b(?:H|L|HIGH|LOW|ABNORMAL|BORDERLINE)\b", text, flags=re.IGNORECASE):
+        return token
+    return None
+
+
+def last_number_match(text: str) -> re.Match[str] | None:
+    matches = list(re.finditer(NUMBER_PATTERN, text))
+    return matches[-1] if matches else None
+
+
+def clean_finding_name(name: str) -> str:
+    return re.sub(r"\s+", " ", name).strip(" :-|")
+
+
+def clean_unit_text(text: str) -> str:
+    text = re.sub(r"\b(?:H|L|HIGH|LOW|ABNORMAL|BORDERLINE)\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" :-|")
+    if not text:
+        return ""
+    tokens = text.split()
+    if len(tokens) > 3:
+        return ""
+    if any(re.search(r"\d", token) for token in tokens):
+        return ""
+    return " ".join(tokens)
+
+
+def is_plausible_finding_name(name: str) -> bool:
+    if len(name) < 2 or len(name) > 80:
+        return False
+    lowered = name.lower()
+    if lowered.startswith(SKIP_LINE_PREFIXES):
+        return False
+    return bool(re.search(r"[A-Za-z]", name))
 
 
 def filter_findings_for_summary(findings: dict[str, Any]) -> dict[str, Any]:

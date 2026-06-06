@@ -110,35 +110,29 @@ class LabPartner:
     @modal.method()
     def run_pipeline(self, pdf_bytes: bytes) -> dict:
         from pipeline import (
-            anonymize_for_pubmed,
+            extract_findings_from_report_text,
             extract_text_from_pdf,
-            format_sources,
             has_findings_for_summary,
-            pubmed_error_context,
-            run_async,
             summarize_without_non_normal_findings,
             timed_step,
         )
-        from pubmed import PubMedError, get_context_for_findings
 
         with timed_step("modal.pipeline.total", pdf_bytes=len(pdf_bytes)):
             with timed_step("modal.pdf.extract", pdf_bytes=len(pdf_bytes)):
                 report_text = extract_text_from_pdf(pdf_bytes)
-            findings = self._extract_findings_impl(report_text)
+            with timed_step("modal.parser.extract", report_chars=len(report_text)):
+                findings = extract_findings_from_report_text(report_text)
+            if not findings.get("findings"):
+                with timed_step("modal.parser.fallback_model"):
+                    findings = self._extract_findings_impl(report_text)
             finding_count = len(findings.get("findings", []))
-            search_terms = anonymize_for_pubmed(findings)
             print(
                 "timing step=modal.extract.result "
-                f"status=ok finding_count={finding_count} search_term_count={len(search_terms)}",
+                f"status=ok finding_count={finding_count}",
                 flush=True,
             )
-            try:
-                with timed_step("modal.pubmed.context", search_term_count=len(search_terms)):
-                    pubmed_context = run_async(get_context_for_findings(search_terms))
-            except PubMedError as error:
-                pubmed_context = pubmed_error_context(str(error))
             if has_findings_for_summary(findings):
-                summary = self._summarize_impl(findings, pubmed_context)
+                summary = self._summarize_impl(findings, {})
             else:
                 with timed_step("modal.summary.deterministic"):
                     summary = summarize_without_non_normal_findings(findings)
@@ -146,5 +140,5 @@ class LabPartner:
         return {
             "findings": findings,
             "summary": summary,
-            "sources": format_sources(pubmed_context),
+            "sources": "No external sources used.",
         }
