@@ -126,6 +126,34 @@ class PipelineTest(unittest.TestCase):
         self.assertNotIn("(Hydrodynamic focusing/electrical", names)
         self.assertNotIn("The complete blood count is performed on", names)
 
+    def test_parser_handles_chemistry_ocr_and_diagnostic_thresholds(self):
+        report_text = """
+        Random Glucose 106 Diagnosis of diabetes ≥ 200
+        UREA 28 Male(cid:9 ) 19 - 43 mg/dL
+        CREATININE (Serum) 1.3 0.3 - 1.5 mg/dL
+        HbA 1 c <7%
+        """
+
+        findings = extract_findings_from_report_text(report_text)
+
+        by_name = {finding["name"]: finding for finding in findings["findings"]}
+        self.assertEqual(by_name["Random Glucose"]["value"], "106")
+        self.assertIsNone(by_name["Random Glucose"]["reference_range"])
+        self.assertEqual(by_name["Random Glucose"]["status"], "unknown")
+        self.assertEqual(by_name["UREA"]["value"], "28")
+        self.assertEqual(by_name["UREA"]["reference_range"], "19 - 43 mg/dL")
+        self.assertEqual(by_name["UREA"]["status"], "normal")
+        self.assertEqual(by_name["CREATININE (Serum)"]["status"], "normal")
+        self.assertNotIn("UREA 28 Male(cid", by_name)
+        self.assertNotIn("HbA", by_name)
+
+    def test_parser_does_not_treat_unit_l_as_low_flag(self):
+        findings = extract_findings_from_report_text("POTASSIUM 4.3 3.5-5.1 mmol/L")
+
+        finding = findings["findings"][0]
+        self.assertIsNone(finding["report_flag"])
+        self.assertEqual(finding["status"], "normal")
+
     def test_mock_pipeline_flags_synthetic_lab_values(self):
         pdf_bytes = make_text_pdf("Patient: Example Person HbA1c 7.2% LDL 130 mg/dL eGFR 82")
 

@@ -57,6 +57,10 @@ METHOD_OR_NARRATIVE_MARKERS = (
     "performed on",
     "complete blood count is performed",
 )
+TRAILING_INTERPRETATION_MARKERS = (
+    "diagnosis of diabetes",
+    "diagnostic of diabetes",
+)
 NUMBER_PATTERN = r"-?\d+(?:\.\d+)?"
 DOCTOR_SHARE_SENTENCE = "Please share this summary with your doctor."
 
@@ -250,12 +254,15 @@ def extract_findings_from_report_text(report_text: str) -> dict[str, Any]:
 
 
 def parse_lab_line(raw_line: str) -> dict[str, Any] | None:
-    line = re.sub(r"\s+", " ", raw_line).strip()
+    line = preprocess_lab_line(raw_line)
     if not should_parse_lab_line(line):
         return None
 
     reference_range, range_start, range_end = find_reference_range(line)
     value_region = line[:range_start] if reference_range else line
+    value_region = strip_value_region_annotations(value_region)
+    if looks_like_split_test_name(value_region):
+        return None
     report_flag = extract_report_flag(line)
     value_match = last_number_match(value_region)
     if not value_match:
@@ -313,7 +320,8 @@ def find_reference_range(line: str) -> tuple[str | None, int, int]:
 
 
 def extract_report_flag(text: str) -> str | None:
-    for token in re.findall(r"\b(?:H|L|HIGH|LOW|ABNORMAL|BORDERLINE)\b", text, flags=re.IGNORECASE):
+    flag_pattern = r"(?<![/A-Za-z])(?:H|L|HIGH|LOW|ABNORMAL|BORDERLINE)(?![A-Za-z])"
+    for token in re.findall(flag_pattern, text, flags=re.IGNORECASE):
         return token
     return None
 
@@ -336,6 +344,8 @@ def clean_unit_text(text: str) -> str:
     if len(tokens) > 3:
         return ""
     if any(re.search(r"\d", token) for token in tokens):
+        return ""
+    if not re.search(r"[A-Za-zµμ/%]", text):
         return ""
     return " ".join(tokens)
 
@@ -363,6 +373,26 @@ def looks_like_report_metadata(text: str) -> bool:
     if re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", text):
         return True
     return False
+
+
+def preprocess_lab_line(raw_line: str) -> str:
+    line = re.sub(r"\(cid:?\s*\d+\s*\)?", " ", raw_line, flags=re.IGNORECASE)
+    line = re.sub(r"\s+", " ", line).strip()
+    lowered = line.lower()
+    for marker in TRAILING_INTERPRETATION_MARKERS:
+        index = lowered.find(marker)
+        if index != -1:
+            line = line[:index].strip()
+            break
+    return re.sub(r"\s+", " ", line).strip(" :-|")
+
+
+def strip_value_region_annotations(value_region: str) -> str:
+    return re.sub(r"\b(?:male|female)\b.*$", "", value_region, flags=re.IGNORECASE).strip()
+
+
+def looks_like_split_test_name(value_region: str) -> bool:
+    return bool(re.fullmatch(r"\s*hba\s*1\s*c\s*", value_region, flags=re.IGNORECASE))
 
 
 def looks_like_method_or_narrative(text: str) -> bool:
@@ -537,19 +567,19 @@ def parse_reference_range(reference_range: str) -> tuple[float | None, float | N
             low, high = high, low
         return low, high, True, True
 
-    upper_match = re.search(r"(<=|<|less than|under)\s*(-?\d+(?:\.\d+)?)", text, flags=re.IGNORECASE)
+    upper_match = re.search(r"(<=|<|≤|less than|under)\s*(-?\d+(?:\.\d+)?)", text, flags=re.IGNORECASE)
     if upper_match:
         operator = upper_match.group(1).lower()
-        return None, float(upper_match.group(2)), True, operator in {"<=", "less than", "under"}
+        return None, float(upper_match.group(2)), True, operator in {"<=", "≤", "less than", "under"}
 
     lower_match = re.search(
-        r"(>=|>|greater than|over|at least)\s*(-?\d+(?:\.\d+)?)",
+        r"(>=|>|≥|greater than|over|at least)\s*(-?\d+(?:\.\d+)?)",
         text,
         flags=re.IGNORECASE,
     )
     if lower_match:
         operator = lower_match.group(1).lower()
-        return float(lower_match.group(2)), None, operator in {">=", "greater than", "over", "at least"}, True
+        return float(lower_match.group(2)), None, operator in {">=", "≥", "greater than", "over", "at least"}, True
 
     return None
 
