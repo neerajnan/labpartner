@@ -2,7 +2,9 @@ import unittest
 
 from pipeline import (
     anonymize_for_pubmed,
+    build_json_repair_prompt,
     build_summary_prompt,
+    extraction_error_findings,
     extract_text_from_pdf,
     normalize_findings,
     run_mock_pipeline,
@@ -210,6 +212,22 @@ class PipelineTest(unittest.TestCase):
         self.assertNotIn("John Smith", summary)
         self.assertNotIn("Patient ID", summary)
         self.assertNotIn("Date of Report", summary)
+
+    def test_json_repair_prompt_requests_valid_schema(self):
+        prompt = build_json_repair_prompt("{findings: [")
+
+        self.assertIn("Return ONLY valid JSON", prompt)
+        self.assertIn('"findings"', prompt)
+        self.assertIn("Malformed output:", prompt)
+
+    def test_extraction_error_summary_is_deterministic(self):
+        findings = extraction_error_findings("bad json")
+
+        summary = summarize_without_non_normal_findings(findings)
+
+        self.assertIn("could not reliably extract structured findings", summary)
+        self.assertIn("Please share this summary with your doctor.", summary)
+        self.assertNotIn("John Smith", summary)
 
 
 if __name__ == "__main__":

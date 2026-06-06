@@ -59,11 +59,29 @@ class LabPartner:
         return self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
     def _extract_findings_impl(self, report_text: str) -> dict:
-        from pipeline import build_extraction_prompt, normalize_findings, parse_json_object
+        from json import JSONDecodeError
+
+        from pipeline import (
+            build_extraction_prompt,
+            build_json_repair_prompt,
+            extraction_error_findings,
+            normalize_findings,
+            parse_json_object,
+        )
 
         prompt = build_extraction_prompt(report_text)
-        raw_output = self._generate(prompt, max_new_tokens=1200)
-        return normalize_findings(parse_json_object(raw_output))
+        raw_output = self._generate(prompt, max_new_tokens=3000)
+        try:
+            return normalize_findings(parse_json_object(raw_output))
+        except (JSONDecodeError, ValueError):
+            repair_prompt = build_json_repair_prompt(raw_output)
+            repaired_output = self._generate(repair_prompt, max_new_tokens=3000)
+            try:
+                return normalize_findings(parse_json_object(repaired_output))
+            except (JSONDecodeError, ValueError):
+                return extraction_error_findings(
+                    "The model returned malformed extraction JSON after a repair attempt."
+                )
 
     def _summarize_impl(self, findings: dict, pubmed_context: dict) -> str:
         from pipeline import build_summary_prompt

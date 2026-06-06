@@ -82,6 +82,30 @@ Format:
 """
 
 
+def build_json_repair_prompt(raw_output: str) -> str:
+    return f"""Convert the following malformed model output into one valid JSON object.
+
+Return ONLY valid JSON. No markdown. No explanation.
+
+Required schema:
+{{
+  "findings": [
+    {{
+      "name": "finding name",
+      "value": "reported value with unit",
+      "reference_range": "normal range if mentioned, otherwise null",
+      "report_flag": "explicit flag shown in the report, otherwise null",
+      "status": "normal | abnormal | borderline | unknown",
+      "search_term": "short clinical term for PubMed search"
+    }}
+  ]
+}}
+
+Malformed output:
+{raw_output}
+"""
+
+
 def parse_json_object(raw_output: str) -> dict[str, Any]:
     """Parse a model response that should contain a single JSON object."""
     text = raw_output.strip()
@@ -103,6 +127,13 @@ def parse_json_object(raw_output: str) -> dict[str, Any]:
     if not isinstance(parsed.get("findings"), list):
         raise ValueError("Model output must include a findings array.")
     return parsed
+
+
+def extraction_error_findings(message: str) -> dict[str, Any]:
+    return {
+        "findings": [],
+        "extraction_error": message,
+    }
 
 
 def normalize_findings(findings: dict[str, Any]) -> dict[str, Any]:
@@ -152,6 +183,13 @@ def has_findings_for_summary(findings: dict[str, Any]) -> bool:
 
 def summarize_without_non_normal_findings(findings: dict[str, Any]) -> str:
     """Return a deterministic summary when there is nothing safe to send to the model."""
+    if findings.get("extraction_error"):
+        return (
+            "LabPartner could not reliably extract structured findings from this PDF. "
+            "Please try a clearer digital PDF or review the report directly with your doctor.\n\n"
+            "Please share this summary with your doctor."
+        )
+
     unknown_names = [
         str(finding.get("name", "a finding")).strip()
         for finding in findings.get("findings", [])
