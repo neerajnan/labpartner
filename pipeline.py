@@ -23,10 +23,26 @@ SKIP_LINE_PREFIXES = (
     "date",
     "doctor",
     "hospital",
+    "mrn",
+    "printed",
+    "printed by",
+    "printed on",
     "sample",
     "specimen",
     "report",
     "page",
+)
+METADATA_MARKERS = (
+    "mrn",
+    "patient id",
+    "patient name",
+    "printed by",
+    "printed on",
+    "page ",
+    "age :",
+    " age ",
+    " years",
+    " months",
 )
 NUMBER_PATTERN = r"-?\d+(?:\.\d+)?"
 
@@ -255,7 +271,9 @@ def should_parse_lab_line(line: str) -> bool:
     if not line or not re.search(r"[A-Za-z]", line) or not re.search(NUMBER_PATTERN, line):
         return False
     lowered = line.lower().strip()
-    return not lowered.startswith(SKIP_LINE_PREFIXES)
+    if lowered.startswith(SKIP_LINE_PREFIXES):
+        return False
+    return not looks_like_report_metadata(lowered)
 
 
 def find_reference_range(line: str) -> tuple[str | None, int, int]:
@@ -306,7 +324,21 @@ def is_plausible_finding_name(name: str) -> bool:
     lowered = name.lower()
     if lowered.startswith(SKIP_LINE_PREFIXES):
         return False
+    if ":" in name or looks_like_report_metadata(lowered):
+        return False
     return bool(re.search(r"[A-Za-z]", name))
+
+
+def looks_like_report_metadata(text: str) -> bool:
+    if any(marker in text for marker in METADATA_MARKERS):
+        return True
+    if re.search(r"\bpage\s+\d+\s+of\s+\d+\b", text):
+        return True
+    if re.search(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", text):
+        return True
+    if re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", text):
+        return True
+    return False
 
 
 def filter_findings_for_summary(findings: dict[str, Any]) -> dict[str, Any]:

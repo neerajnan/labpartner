@@ -87,6 +87,22 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(findings["findings"][0]["name"], "URINE PROTEIN/CREATININE RATIO")
         self.assertEqual(findings["findings"][0]["status"], "unknown")
 
+    def test_parser_ignores_header_and_footer_metadata(self):
+        report_text = """
+        MRN : MR01776545 Age : 33 Years 7 Months
+        PROTEIN CREATININE 0.04
+        URINE PROTEIN 1.12 1-14 mg/dL
+        URINE CREATININE 26 14.71-294.12 mg/dL
+        Printed By: 18818 Page 1 of 1 Printed On: 09/05/2026 16:03
+        """
+
+        findings = extract_findings_from_report_text(report_text)
+
+        names = [finding["name"] for finding in findings["findings"]]
+        self.assertNotIn("MRN : MR01776545 Age : 33 Years", names)
+        self.assertNotIn("Printed By: 18818 Page 1 of 1 Printed On: 09/05/2026 16", names)
+        self.assertEqual(names, ["PROTEIN CREATININE", "URINE PROTEIN", "URINE CREATININE"])
+
     def test_mock_pipeline_flags_synthetic_lab_values(self):
         pdf_bytes = make_text_pdf("Patient: Example Person HbA1c 7.2% LDL 130 mg/dL eGFR 82")
 
