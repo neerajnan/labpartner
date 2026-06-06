@@ -128,31 +128,15 @@ Report:
 
 def build_summary_prompt(findings: dict[str, Any], pubmed_context: dict[str, Any]) -> str:
     findings_json = json.dumps(filter_findings_for_summary(findings), indent=2)
-    return f"""You are a medical report interpreter helping a patient understand their lab results.
-
-You have the following non-normal extracted findings. These are the ONLY findings to summarize:
+    return f"""You are helping a patient understand lab results. Use only the non-normal findings in this JSON:
 {findings_json}
 
-Return only the final patient-facing summary. Do not include examples, drafts, reasoning, analysis, placeholders, alternate versions, or markdown separators.
+Return only the patient-facing summary. Do not include instructions, examples, drafts, analysis, placeholders, or markdown separators.
 
-Write a plain-language summary for the patient. For each abnormal or borderline finding, write exactly one compact bullet that includes:
-1. What the test measures
-2. The patient's value and the report's reference range
-3. Whether the value is high, low, abnormal, or borderline based on that reference range
-
-Keep each finding bullet under 30 words.
-
-Use simple language. Avoid jargon. Do not diagnose. Do not recommend treatment.
-Do not use bracketed placeholder text like "[what it means]".
-Do not repeat "your doctor may want to investigate" in each bullet; put follow-up guidance only in the Overall Summary.
-Do not invent concern for values marked normal or values that are within the stated reference range.
-Do not say that a low urine protein/creatinine ratio suggests kidney dysfunction unless the report explicitly flags it as abnormal or it is outside the stated reference range.
-The final line must be exactly: Please share this summary with your doctor.
-Do not repeat these instructions, the requested format, or any checklist text in your answer.
-
-Format:
-- Use one bullet point for each finding
-- A final "Overall Summary" paragraph
+Start with the heading "Lab Results Summary".
+After that heading, write one compact bullet per finding. Each bullet must be under 30 words and include the test name, value, reference range, and high/low/abnormal status.
+Then write the heading "Overall Summary" and one short paragraph telling the patient to review these non-normal findings with their doctor.
+Use this exact final sentence: Please share this summary with your doctor.
 """
 
 
@@ -475,6 +459,74 @@ def summarize_without_non_normal_findings(findings: dict[str, Any]) -> str:
     )
     paragraphs.append("Please share this summary with your doctor.")
     return "\n\n".join(paragraphs)
+
+
+def summarize_non_normal_findings_deterministic(findings: dict[str, Any]) -> str:
+    """Return a compact deterministic summary when model summary output is unusable."""
+    summary_findings = filter_findings_for_summary(findings)["findings"]
+    if not summary_findings:
+        return summarize_without_non_normal_findings(findings)
+
+    lines = ["Lab Results Summary"]
+    for finding in summary_findings:
+        name = str(finding.get("name") or "This finding").strip()
+        value = str(finding.get("value") or "the reported value").strip()
+        reference_range = finding.get("reference_range")
+        reference_text = (
+            f"reference range {reference_range}"
+            if reference_range not in {None, ""}
+            else "no usable reference range"
+        )
+        direction = finding_direction(finding)
+        lines.append(f"- {name}: {value} is {direction} ({reference_text}).")
+
+    lines.extend(
+        [
+            "",
+            "Overall Summary",
+            "Please review these non-normal findings with your doctor, who can interpret them with your symptoms, history, medications, and other results.",
+            "",
+            "Please share this summary with your doctor.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def finding_direction(finding: dict[str, Any]) -> str:
+    value = str(finding.get("value", ""))
+    reference_range = finding.get("reference_range")
+    numeric_value = first_number(value)
+    bounds = parse_reference_range(str(reference_range)) if reference_range not in {None, ""} else None
+    if numeric_value is not None and bounds is not None:
+        low, high, low_inclusive, high_inclusive = bounds
+        below_low = low is not None and (
+            numeric_value < low if low_inclusive else numeric_value <= low
+        )
+        above_high = high is not None and (
+            numeric_value > high if high_inclusive else numeric_value >= high
+        )
+        if below_low:
+            return "low"
+        if above_high:
+            return "high"
+    return str(finding.get("status") or "non-normal")
+
+
+def is_summary_insufficient(summary: str, findings: dict[str, Any]) -> bool:
+    if not has_findings_for_summary(findings):
+        return False
+    normalized = summary.strip()
+    if not normalized:
+        return True
+    content_without_doctor_line = normalized.replace(DOCTOR_SHARE_SENTENCE, "").strip()
+    if not content_without_doctor_line:
+        return True
+    summary_findings = filter_findings_for_summary(findings)["findings"]
+    return not any(
+        str(finding.get("name", "")).strip().lower() in normalized.lower()
+        for finding in summary_findings
+        if str(finding.get("name", "")).strip()
+    )
 
 
 def clean_summary_output(summary: str) -> str:

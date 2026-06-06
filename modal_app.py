@@ -87,7 +87,7 @@ class LabPartner:
     def _generate(self, prompt: str, max_new_tokens: int) -> str:
         import torch
 
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+        inputs = self._tokenize_prompt(prompt)
         with torch.inference_mode():
             output_ids = self.model.generate(
                 **inputs,
@@ -97,6 +97,27 @@ class LabPartner:
             )
         generated_ids = output_ids[0][inputs["input_ids"].shape[-1] :]
         return self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+    def _tokenize_prompt(self, prompt: str):
+        if getattr(self.tokenizer, "chat_template", None):
+            messages = [{"role": "user", "content": prompt}]
+            try:
+                inputs = self.tokenizer.apply_chat_template(
+                    messages,
+                    add_generation_prompt=True,
+                    return_tensors="pt",
+                    return_dict=True,
+                )
+            except TypeError:
+                input_ids = self.tokenizer.apply_chat_template(
+                    messages,
+                    add_generation_prompt=True,
+                    return_tensors="pt",
+                )
+                inputs = {"input_ids": input_ids}
+        else:
+            inputs = self.tokenizer(prompt, return_tensors="pt")
+        return {key: value.to(self.model.device) for key, value in inputs.items()}
 
     def _extract_findings_impl(self, report_text: str) -> dict:
         from json import JSONDecodeError
@@ -129,7 +150,14 @@ class LabPartner:
                 )
 
     def _summarize_impl(self, findings: dict, pubmed_context: dict) -> str:
-        from pipeline import build_summary_prompt, clean_summary_output, summary_token_budget, timed_step
+        from pipeline import (
+            build_summary_prompt,
+            clean_summary_output,
+            is_summary_insufficient,
+            summarize_non_normal_findings_deterministic,
+            summary_token_budget,
+            timed_step,
+        )
 
         prompt = build_summary_prompt(findings, pubmed_context)
         max_new_tokens = summary_token_budget(findings)
@@ -140,7 +168,11 @@ class LabPartner:
         ):
             raw_summary = self._generate(prompt, max_new_tokens=max_new_tokens)
         with timed_step("modal.summary.clean", output_chars=len(raw_summary)):
-            return clean_summary_output(raw_summary)
+            summary = clean_summary_output(raw_summary)
+        if is_summary_insufficient(summary, findings):
+            with timed_step("modal.summary.deterministic_fallback"):
+                return summarize_non_normal_findings_deterministic(findings)
+        return summary
 
     @modal.method()
     def extract_findings(self, report_text: str) -> dict:

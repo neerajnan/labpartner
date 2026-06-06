@@ -11,8 +11,10 @@ from pipeline import (
     extract_findings_from_report_text,
     extract_text_from_pdf,
     normalize_findings,
+    is_summary_insufficient,
     pubmed_error_context,
     run_mock_pipeline,
+    summarize_non_normal_findings_deterministic,
     summarize_without_non_normal_findings,
     summary_token_budget,
     timed_step,
@@ -261,9 +263,9 @@ class PipelineTest(unittest.TestCase):
 
         prompt = build_summary_prompt(findings, {})
 
-        self.assertIn("The patient's value and the report's reference range", prompt)
-        self.assertIn("Keep each finding bullet under 30 words", prompt)
-        self.assertIn("follow-up guidance only in the Overall Summary", prompt)
+        self.assertIn("include the test name, value, reference range", prompt)
+        self.assertIn("under 30 words", prompt)
+        self.assertIn("Return only the patient-facing summary", prompt)
         self.assertIn('"value": "70.2 %"', prompt)
         self.assertIn('"reference_range": "40-70 %"', prompt)
 
@@ -468,6 +470,47 @@ Please share this summary with your doctor.
         cleaned = clean_summary_output('- End with "Please share this summary with your doctor.')
 
         self.assertEqual(cleaned, "Please share this summary with your doctor.")
+
+    def test_summary_insufficient_when_only_doctor_line_for_abnormal_findings(self):
+        findings = {
+            "findings": [
+                {
+                    "name": "NEUTROPHILS",
+                    "value": "70.2",
+                    "reference_range": "40-70 %",
+                    "status": "abnormal",
+                }
+            ]
+        }
+
+        self.assertTrue(is_summary_insufficient("Please share this summary with your doctor.", findings))
+
+    def test_deterministic_non_normal_summary_includes_findings(self):
+        findings = {
+            "findings": [
+                {
+                    "name": "NEUTROPHILS",
+                    "value": "70.2",
+                    "reference_range": "40-70 %",
+                    "status": "abnormal",
+                },
+                {
+                    "name": "EOSINOPHILS",
+                    "value": "0.5",
+                    "reference_range": "1-6 %",
+                    "status": "abnormal",
+                },
+            ]
+        }
+
+        summary = summarize_non_normal_findings_deterministic(findings)
+
+        self.assertIn("NEUTROPHILS", summary)
+        self.assertIn("70.2", summary)
+        self.assertIn("high", summary)
+        self.assertIn("EOSINOPHILS", summary)
+        self.assertIn("low", summary)
+        self.assertTrue(summary.endswith("Please share this summary with your doctor."))
 
     def test_timed_step_logs_privacy_safe_metadata(self):
         output = StringIO()
