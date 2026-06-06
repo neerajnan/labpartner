@@ -104,15 +104,19 @@ class LabPartner:
             extract_text_from_pdf,
             format_sources,
             has_findings_for_summary,
+            pubmed_error_context,
             run_async,
             summarize_without_non_normal_findings,
         )
-        from pubmed import get_context_for_findings
+        from pubmed import PubMedError, get_context_for_findings
 
         report_text = extract_text_from_pdf(pdf_bytes)
         findings = self._extract_findings_impl(report_text)
         search_terms = anonymize_for_pubmed(findings)
-        pubmed_context = run_async(get_context_for_findings(search_terms))
+        try:
+            pubmed_context = run_async(get_context_for_findings(search_terms))
+        except PubMedError as error:
+            pubmed_context = pubmed_error_context(str(error))
         summary = (
             self._summarize_impl(findings, pubmed_context)
             if has_findings_for_summary(findings)

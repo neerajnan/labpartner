@@ -7,6 +7,7 @@ from pipeline import (
     extraction_error_findings,
     extract_text_from_pdf,
     normalize_findings,
+    pubmed_error_context,
     run_mock_pipeline,
     summarize_without_non_normal_findings,
 )
@@ -228,6 +229,14 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("could not reliably extract structured findings", summary)
         self.assertIn("Please share this summary with your doctor.", summary)
         self.assertNotIn("John Smith", summary)
+
+    def test_pubmed_error_context_renders_sources_warning(self):
+        from pipeline import format_sources
+
+        sources = format_sources(pubmed_error_context("PubMed request failed with HTTP 429."))
+
+        self.assertIn("PubMed sources unavailable", sources)
+        self.assertIn("HTTP 429", sources)
 
 
 if __name__ == "__main__":

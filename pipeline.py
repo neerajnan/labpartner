@@ -313,6 +313,9 @@ def run_async(coro):
 
 def format_sources(pubmed_context: dict[str, Any]) -> str:
     """Render PubMed source links for the Gradio Markdown panel."""
+    if pubmed_context.get("_error"):
+        return f"PubMed sources unavailable: {pubmed_context['_error']}"
+
     lines = []
     for term, context in pubmed_context.items():
         urls = context.get("urls", []) if isinstance(context, dict) else []
@@ -321,6 +324,10 @@ def format_sources(pubmed_context: dict[str, Any]) -> str:
         links = ", ".join(f"[PMID {url.rstrip('/').split('/')[-1]}]({url})" for url in urls)
         lines.append(f"- **{term}**: {links}")
     return "\n".join(lines) if lines else "No PubMed sources found."
+
+
+def pubmed_error_context(message: str) -> dict[str, Any]:
+    return {"_error": message}
 
 
 def mock_extract_findings(report_text: str) -> dict[str, Any]:
