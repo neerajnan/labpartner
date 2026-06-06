@@ -154,6 +154,24 @@ class PipelineTest(unittest.TestCase):
         self.assertIsNone(finding["report_flag"])
         self.assertEqual(finding["status"], "normal")
 
+    def test_parser_handles_thousands_and_scientific_count_units(self):
+        report_text = """
+        PIN No 680022
+        Total Leucocytes (WBC) count 7,600 cells/cu.mm 4000-10500
+        Platelet count 215 10^3 / µl 150-450
+        Platelet count 215 10^ 3 / µl 150-450
+        """
+
+        findings = extract_findings_from_report_text(report_text)
+
+        by_name = {finding["name"]: finding for finding in findings["findings"]}
+        self.assertNotIn("PIN No", by_name)
+        self.assertEqual(by_name["Total Leucocytes (WBC) count"]["value"], "7,600 cells/cu.mm")
+        self.assertEqual(by_name["Total Leucocytes (WBC) count"]["status"], "normal")
+        self.assertEqual(by_name["Platelet count"]["value"], "215 10^3 / µl")
+        self.assertIsNone(by_name["Platelet count"]["report_flag"])
+        self.assertEqual(by_name["Platelet count"]["status"], "normal")
+
     def test_mock_pipeline_flags_synthetic_lab_values(self):
         pdf_bytes = make_text_pdf("Patient: Example Person HbA1c 7.2% LDL 130 mg/dL eGFR 82")
 
@@ -244,7 +262,8 @@ class PipelineTest(unittest.TestCase):
         prompt = build_summary_prompt(findings, {})
 
         self.assertIn("The patient's value and the report's reference range", prompt)
-        self.assertIn("Keep each finding bullet under 45 words", prompt)
+        self.assertIn("Keep each finding bullet under 30 words", prompt)
+        self.assertIn("follow-up guidance only in the Overall Summary", prompt)
         self.assertIn('"value": "70.2 %"', prompt)
         self.assertIn('"reference_range": "40-70 %"', prompt)
 
@@ -261,9 +280,13 @@ class PipelineTest(unittest.TestCase):
             ]
         }
 
-        self.assertEqual(summary_token_budget({"findings": []}), 450)
-        self.assertEqual(summary_token_budget({"findings": findings["findings"][:2]}), 460)
-        self.assertEqual(summary_token_budget(findings), 1200)
+        self.assertEqual(summary_token_budget({"findings": []}), 400)
+        self.assertEqual(summary_token_budget({"findings": findings["findings"][:2]}), 400)
+        self.assertEqual(summary_token_budget(findings), 670)
+        self.assertEqual(
+            summary_token_budget({"findings": findings["findings"] + findings["findings"]}),
+            900,
+        )
 
     def test_missing_reference_range_does_not_infer_low_or_high(self):
         extracted = {

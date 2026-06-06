@@ -31,11 +31,14 @@ SKIP_LINE_PREFIXES = (
     "specimen",
     "report",
     "page",
+    "pin",
+    "pin no",
 )
 METADATA_MARKERS = (
     "mrn",
     "patient id",
     "patient name",
+    "pin no",
     "printed by",
     "printed on",
     "page ",
@@ -61,7 +64,7 @@ TRAILING_INTERPRETATION_MARKERS = (
     "diagnosis of diabetes",
     "diagnostic of diabetes",
 )
-NUMBER_PATTERN = r"-?\d+(?:\.\d+)?"
+NUMBER_PATTERN = r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 DOCTOR_SHARE_SENTENCE = "Please share this summary with your doctor."
 
 
@@ -132,16 +135,16 @@ You have the following non-normal extracted findings. These are the ONLY finding
 
 Return only the final patient-facing summary. Do not include examples, drafts, reasoning, analysis, placeholders, alternate versions, or markdown separators.
 
-Write a plain-language summary for the patient. For each abnormal or borderline finding, write exactly one bullet that includes:
+Write a plain-language summary for the patient. For each abnormal or borderline finding, write exactly one compact bullet that includes:
 1. What the test measures
 2. The patient's value and the report's reference range
 3. Whether the value is high, low, abnormal, or borderline based on that reference range
-4. What a doctor might want to investigate further
 
-Keep each finding bullet under 45 words.
+Keep each finding bullet under 30 words.
 
 Use simple language. Avoid jargon. Do not diagnose. Do not recommend treatment.
 Do not use bracketed placeholder text like "[what it means]".
+Do not repeat "your doctor may want to investigate" in each bullet; put follow-up guidance only in the Overall Summary.
 Do not invent concern for values marked normal or values that are within the stated reference range.
 Do not say that a low urine protein/creatinine ratio suggests kidney dysfunction unless the report explicitly flags it as abnormal or it is outside the stated reference range.
 End with: "Please share this summary with your doctor."
@@ -264,7 +267,7 @@ def parse_lab_line(raw_line: str) -> dict[str, Any] | None:
     if looks_like_split_test_name(value_region):
         return None
     report_flag = extract_report_flag(line)
-    value_match = last_number_match(value_region)
+    value_match = lab_value_number_match(value_region)
     if not value_match:
         return None
 
@@ -320,7 +323,7 @@ def find_reference_range(line: str) -> tuple[str | None, int, int]:
 
 
 def extract_report_flag(text: str) -> str | None:
-    flag_pattern = r"(?<![/A-Za-z])(?:H|L|HIGH|LOW|ABNORMAL|BORDERLINE)(?![A-Za-z])"
+    flag_pattern = r"(?<![/A-Za-zµμ])(?:H|L|HIGH|LOW|ABNORMAL|BORDERLINE)(?![A-Za-zµμ])"
     for token in re.findall(flag_pattern, text, flags=re.IGNORECASE):
         return token
     return None
@@ -329,6 +332,17 @@ def extract_report_flag(text: str) -> str | None:
 def last_number_match(text: str) -> re.Match[str] | None:
     matches = list(re.finditer(NUMBER_PATTERN, text))
     return matches[-1] if matches else None
+
+
+def lab_value_number_match(text: str) -> re.Match[str] | None:
+    matches = list(re.finditer(NUMBER_PATTERN, text))
+    if not matches:
+        return None
+    for match in reversed(matches):
+        tail = text[match.end() :].strip()
+        if re.match(r"^(?:x\s*)?10\s*\^\s*\d+\b", tail, flags=re.IGNORECASE):
+            return match
+    return matches[-1]
 
 
 def clean_finding_name(name: str) -> str:
@@ -340,6 +354,14 @@ def clean_unit_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip(" :-|")
     if not text:
         return ""
+    scientific_unit_match = re.fullmatch(
+        r"((?:x\s*)?10\s*\^\s*\d+\s*/?\s*[A-Za-zµμ/]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if scientific_unit_match:
+        unit = re.sub(r"\s+", " ", scientific_unit_match.group(1)).strip()
+        return re.sub(r"\^\s+", "^", unit)
     tokens = text.split()
     if len(tokens) > 3:
         return ""
@@ -417,7 +439,7 @@ def has_findings_for_summary(findings: dict[str, Any]) -> bool:
 def summary_token_budget(findings: dict[str, Any]) -> int:
     """Scale summary generation budget to non-normal finding count."""
     finding_count = len(filter_findings_for_summary(findings)["findings"])
-    return min(1200, max(450, 180 + finding_count * 140))
+    return min(900, max(400, 220 + finding_count * 45))
 
 
 def summarize_without_non_normal_findings(findings: dict[str, Any]) -> str:
@@ -556,37 +578,41 @@ def parse_reference_range(reference_range: str) -> tuple[float | None, float | N
     text = reference_range.replace("–", "-").replace("—", "-").strip()
 
     between_match = re.search(
-        r"(-?\d+(?:\.\d+)?)\s*(?:-|to)\s*(-?\d+(?:\.\d+)?)",
+        rf"({NUMBER_PATTERN})\s*(?:-|to)\s*({NUMBER_PATTERN})",
         text,
         flags=re.IGNORECASE,
     )
     if between_match:
-        low = float(between_match.group(1))
-        high = float(between_match.group(2))
+        low = parse_numeric_token(between_match.group(1))
+        high = parse_numeric_token(between_match.group(2))
         if low > high:
             low, high = high, low
         return low, high, True, True
 
-    upper_match = re.search(r"(<=|<|≤|less than|under)\s*(-?\d+(?:\.\d+)?)", text, flags=re.IGNORECASE)
+    upper_match = re.search(rf"(<=|<|≤|less than|under)\s*({NUMBER_PATTERN})", text, flags=re.IGNORECASE)
     if upper_match:
         operator = upper_match.group(1).lower()
-        return None, float(upper_match.group(2)), True, operator in {"<=", "≤", "less than", "under"}
+        return None, parse_numeric_token(upper_match.group(2)), True, operator in {"<=", "≤", "less than", "under"}
 
     lower_match = re.search(
-        r"(>=|>|≥|greater than|over|at least)\s*(-?\d+(?:\.\d+)?)",
+        rf"(>=|>|≥|greater than|over|at least)\s*({NUMBER_PATTERN})",
         text,
         flags=re.IGNORECASE,
     )
     if lower_match:
         operator = lower_match.group(1).lower()
-        return float(lower_match.group(2)), None, operator in {">=", "≥", "greater than", "over", "at least"}, True
+        return parse_numeric_token(lower_match.group(2)), None, operator in {">=", "≥", "greater than", "over", "at least"}, True
 
     return None
 
 
 def first_number(text: str) -> float | None:
-    match = re.search(r"-?\d+(?:\.\d+)?", text)
-    return float(match.group(0)) if match else None
+    match = re.search(NUMBER_PATTERN, text)
+    return parse_numeric_token(match.group(0)) if match else None
+
+
+def parse_numeric_token(token: str) -> float:
+    return float(token.replace(",", ""))
 
 
 def anonymize_for_pubmed(findings: dict[str, Any]) -> list[str]:
