@@ -34,15 +34,17 @@ class LabPartner:
 
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
+        from pipeline import timed_step
 
-        token = os.environ["HF_TOKEN"]
-        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=token)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            token=token,
-            device_map="auto",
-            dtype=torch.bfloat16,
-        )
+        with timed_step("modal.load_model"):
+            token = os.environ["HF_TOKEN"]
+            self.tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=token)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                MODEL_ID,
+                token=token,
+                device_map="auto",
+                dtype=torch.bfloat16,
+            )
 
     def _generate(self, prompt: str, max_new_tokens: int) -> str:
         import torch
@@ -67,27 +69,35 @@ class LabPartner:
             extraction_error_findings,
             normalize_findings,
             parse_json_object,
+            timed_step,
         )
 
         prompt = build_extraction_prompt(report_text)
-        raw_output = self._generate(prompt, max_new_tokens=3000)
+        with timed_step("modal.extract.generate", report_chars=len(report_text)):
+            raw_output = self._generate(prompt, max_new_tokens=3000)
         try:
-            return normalize_findings(parse_json_object(raw_output))
+            with timed_step("modal.extract.parse", output_chars=len(raw_output)):
+                return normalize_findings(parse_json_object(raw_output))
         except (JSONDecodeError, ValueError):
             repair_prompt = build_json_repair_prompt(raw_output)
-            repaired_output = self._generate(repair_prompt, max_new_tokens=3000)
+            with timed_step("modal.extract.repair_generate", output_chars=len(raw_output)):
+                repaired_output = self._generate(repair_prompt, max_new_tokens=3000)
             try:
-                return normalize_findings(parse_json_object(repaired_output))
+                with timed_step("modal.extract.repair_parse", output_chars=len(repaired_output)):
+                    return normalize_findings(parse_json_object(repaired_output))
             except (JSONDecodeError, ValueError):
                 return extraction_error_findings(
                     "The model returned malformed extraction JSON after a repair attempt."
                 )
 
     def _summarize_impl(self, findings: dict, pubmed_context: dict) -> str:
-        from pipeline import build_summary_prompt, clean_summary_output
+        from pipeline import build_summary_prompt, clean_summary_output, timed_step
 
         prompt = build_summary_prompt(findings, pubmed_context)
-        return clean_summary_output(self._generate(prompt, max_new_tokens=1400))
+        with timed_step("modal.summary.generate", prompt_chars=len(prompt)):
+            raw_summary = self._generate(prompt, max_new_tokens=1400)
+        with timed_step("modal.summary.clean", output_chars=len(raw_summary)):
+            return clean_summary_output(raw_summary)
 
     @modal.method()
     def extract_findings(self, report_text: str) -> dict:
@@ -107,21 +117,31 @@ class LabPartner:
             pubmed_error_context,
             run_async,
             summarize_without_non_normal_findings,
+            timed_step,
         )
         from pubmed import PubMedError, get_context_for_findings
 
-        report_text = extract_text_from_pdf(pdf_bytes)
-        findings = self._extract_findings_impl(report_text)
-        search_terms = anonymize_for_pubmed(findings)
-        try:
-            pubmed_context = run_async(get_context_for_findings(search_terms))
-        except PubMedError as error:
-            pubmed_context = pubmed_error_context(str(error))
-        summary = (
-            self._summarize_impl(findings, pubmed_context)
-            if has_findings_for_summary(findings)
-            else summarize_without_non_normal_findings(findings)
-        )
+        with timed_step("modal.pipeline.total", pdf_bytes=len(pdf_bytes)):
+            with timed_step("modal.pdf.extract", pdf_bytes=len(pdf_bytes)):
+                report_text = extract_text_from_pdf(pdf_bytes)
+            findings = self._extract_findings_impl(report_text)
+            finding_count = len(findings.get("findings", []))
+            search_terms = anonymize_for_pubmed(findings)
+            print(
+                "timing step=modal.extract.result "
+                f"status=ok finding_count={finding_count} search_term_count={len(search_terms)}",
+                flush=True,
+            )
+            try:
+                with timed_step("modal.pubmed.context", search_term_count=len(search_terms)):
+                    pubmed_context = run_async(get_context_for_findings(search_terms))
+            except PubMedError as error:
+                pubmed_context = pubmed_error_context(str(error))
+            if has_findings_for_summary(findings):
+                summary = self._summarize_impl(findings, pubmed_context)
+            else:
+                with timed_step("modal.summary.deterministic"):
+                    summary = summarize_without_non_normal_findings(findings)
 
         return {
             "findings": findings,

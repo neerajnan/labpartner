@@ -1,4 +1,6 @@
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 
 from pipeline import (
     anonymize_for_pubmed,
@@ -11,6 +13,7 @@ from pipeline import (
     pubmed_error_context,
     run_mock_pipeline,
     summarize_without_non_normal_findings,
+    timed_step,
 )
 
 
@@ -253,6 +256,17 @@ class PipelineTest(unittest.TestCase):
         self.assertNotIn("A final", cleaned)
         self.assertNotIn("Use bullet points", cleaned)
         self.assertTrue(cleaned.startswith("**Patient Summary:**"))
+
+    def test_timed_step_logs_privacy_safe_metadata(self):
+        output = StringIO()
+
+        with redirect_stdout(output):
+            with timed_step("unit.test", item_count=2):
+                pass
+
+        log_line = output.getvalue()
+        self.assertIn("timing step=unit.test status=ok seconds=", log_line)
+        self.assertIn("item_count=2", log_line)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ import asyncio
 import io
 import json
 import re
+import time
+from contextlib import contextmanager
 from copy import deepcopy
 from typing import Any
 
@@ -12,6 +14,23 @@ import pdfplumber
 
 ALLOWED_FINDING_STATUSES = {"abnormal", "borderline"}
 EXPLICIT_NON_NORMAL_FLAGS = {"h", "high", "l", "low", "a", "abnormal", "borderline"}
+
+
+@contextmanager
+def timed_step(step: str, **metadata: Any):
+    """Log privacy-safe step timing metadata."""
+    start = time.perf_counter()
+    status = "ok"
+    try:
+        yield
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        elapsed = time.perf_counter() - start
+        metadata_text = " ".join(f"{key}={value}" for key, value in metadata.items())
+        suffix = f" {metadata_text}" if metadata_text else ""
+        print(f"timing step={step} status={status} seconds={elapsed:.3f}{suffix}", flush=True)
 
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
