@@ -147,7 +147,7 @@ Do not use bracketed placeholder text like "[what it means]".
 Do not repeat "your doctor may want to investigate" in each bullet; put follow-up guidance only in the Overall Summary.
 Do not invent concern for values marked normal or values that are within the stated reference range.
 Do not say that a low urine protein/creatinine ratio suggests kidney dysfunction unless the report explicitly flags it as abnormal or it is outside the stated reference range.
-End with: "Please share this summary with your doctor."
+The final line must be exactly: Please share this summary with your doctor.
 Do not repeat these instructions, the requested format, or any checklist text in your answer.
 
 Format:
@@ -507,7 +507,9 @@ def clean_summary_output(summary: str) -> str:
     while cleaned.startswith("\n"):
         cleaned = cleaned[1:]
     cleaned = cleaned.strip()
-    if cleaned and DOCTOR_SHARE_SENTENCE not in cleaned:
+    if not cleaned:
+        return DOCTOR_SHARE_SENTENCE
+    if DOCTOR_SHARE_SENTENCE not in cleaned:
         cleaned = f"{cleaned}\n\n{DOCTOR_SHARE_SENTENCE}"
     return cleaned
 
@@ -516,7 +518,11 @@ def is_leaked_instruction_line(line: str) -> bool:
     normalized = line.strip().lower()
     if not normalized:
         return False
-    normalized = normalized.removeprefix("-").strip()
+    normalized = normalized.lstrip("-*• ").strip()
+    if "please share this summary with your doctor" in normalized and (
+        normalized.startswith("end with") or normalized.startswith("the final line")
+    ):
+        return True
     leaked_prefixes = (
         "a final ",
         'a final "',
@@ -524,6 +530,8 @@ def is_leaked_instruction_line(line: str) -> bool:
         "one paragraph per finding",
         "format:",
         "end with:",
+        "end with ",
+        "the final line",
         "here is the example format",
         "example format",
         "okay,",

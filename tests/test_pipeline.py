@@ -464,6 +464,11 @@ Please share this summary with your doctor.
 
         self.assertTrue(cleaned.endswith("Please share this summary with your doctor."))
 
+    def test_clean_summary_output_removes_only_leaked_final_line_instruction(self):
+        cleaned = clean_summary_output('- End with "Please share this summary with your doctor.')
+
+        self.assertEqual(cleaned, "Please share this summary with your doctor.")
+
     def test_timed_step_logs_privacy_safe_metadata(self):
         output = StringIO()
 
