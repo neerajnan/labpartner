@@ -75,9 +75,10 @@ Use simple language. Avoid jargon. Do not diagnose. Do not recommend treatment.
 Do not invent concern for values marked normal or values that are within the stated reference range.
 Do not say that a low urine protein/creatinine ratio suggests kidney dysfunction unless the report explicitly flags it as abnormal or it is outside the stated reference range.
 End with: "Please share this summary with your doctor."
+Do not repeat these instructions, the requested format, or any checklist text in your answer.
 
 Format:
-- One paragraph per finding
+- Use bullet points for the explanation of each finding
 - A final "Overall Summary" paragraph
 """
 
@@ -214,6 +215,30 @@ def summarize_without_non_normal_findings(findings: dict[str, Any]) -> str:
     )
     paragraphs.append("Please share this summary with your doctor.")
     return "\n\n".join(paragraphs)
+
+
+def clean_summary_output(summary: str) -> str:
+    """Remove leaked prompt/checklist fragments from the start of a model summary."""
+    lines = summary.splitlines()
+    while lines and is_leaked_instruction_line(lines[0]):
+        lines.pop(0)
+    return "\n".join(lines).lstrip()
+
+
+def is_leaked_instruction_line(line: str) -> bool:
+    normalized = line.strip().lower()
+    if not normalized:
+        return False
+    normalized = normalized.removeprefix("-").strip()
+    leaked_prefixes = (
+        "a final ",
+        'a final "',
+        "use bullet points",
+        "one paragraph per finding",
+        "format:",
+        "end with:",
+    )
+    return normalized.startswith(leaked_prefixes)
 
 
 def status_from_reference_range(value: str, reference_range: Any) -> str | None:

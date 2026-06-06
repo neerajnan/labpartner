@@ -4,6 +4,7 @@ from pipeline import (
     anonymize_for_pubmed,
     build_json_repair_prompt,
     build_summary_prompt,
+    clean_summary_output,
     extraction_error_findings,
     extract_text_from_pdf,
     normalize_findings,
@@ -237,6 +238,21 @@ class PipelineTest(unittest.TestCase):
 
         self.assertIn("PubMed sources unavailable", sources)
         self.assertIn("HTTP 429", sources)
+
+    def test_clean_summary_output_removes_leaked_prompt_lines(self):
+        raw_summary = (
+            '- A final "Please share this summary with your doctor." line\n'
+            "- Use bullet points for the explanation of each finding.\n\n"
+            "**Patient Summary:**\n\n"
+            "**Neutrophils**\n"
+            "* This test measures neutrophils.\n"
+        )
+
+        cleaned = clean_summary_output(raw_summary)
+
+        self.assertNotIn("A final", cleaned)
+        self.assertNotIn("Use bullet points", cleaned)
+        self.assertTrue(cleaned.startswith("**Patient Summary:**"))
 
 
 if __name__ == "__main__":

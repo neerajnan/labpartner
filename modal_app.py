@@ -84,10 +84,10 @@ class LabPartner:
                 )
 
     def _summarize_impl(self, findings: dict, pubmed_context: dict) -> str:
-        from pipeline import build_summary_prompt
+        from pipeline import build_summary_prompt, clean_summary_output
 
         prompt = build_summary_prompt(findings, pubmed_context)
-        return self._generate(prompt, max_new_tokens=1400)
+        return clean_summary_output(self._generate(prompt, max_new_tokens=1400))
 
     @modal.method()
     def extract_findings(self, report_text: str) -> dict:
