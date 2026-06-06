@@ -9,11 +9,14 @@ import gradio as gr
 USE_MOCK = os.getenv("USE_MOCK", "").lower() in {"1", "true", "yes"}
 MODAL_APP_NAME = os.getenv("MODAL_APP_NAME", "labpartner")
 MODAL_CLASS_NAME = os.getenv("MODAL_CLASS_NAME", "LabPartner")
+MODAL_EXTRACT_FUNCTION_NAME = os.getenv("MODAL_EXTRACT_FUNCTION_NAME", "extract_pdf_findings")
+SUMMARY_PENDING_TEXT = "Extracted findings. Generating summary..."
 
 
 def analyze(pdf_file):
     if pdf_file is None:
-        return {}, "Please upload a PDF report.", ""
+        yield {}, "Please upload a PDF report.", ""
+        return
 
     try:
         with open(pdf_file.name, "rb") as file:
@@ -23,20 +26,37 @@ def analyze(pdf_file):
             os.unlink(pdf_file.name)
 
     if USE_MOCK:
-        from pipeline import run_mock_pipeline
+        from pipeline import extract_text_from_pdf, mock_extract_findings, mock_summarize, normalize_findings
 
-        result = run_mock_pipeline(pdf_bytes)
-    else:
-        import modal
+        report_text = extract_text_from_pdf(pdf_bytes)
+        findings = normalize_findings(mock_extract_findings(report_text))
+        sources = "No external sources used."
+        yield findings, SUMMARY_PENDING_TEXT, sources
+        yield findings, mock_summarize(findings, {}), sources
+        return
 
+    import modal
+    from pipeline import has_findings_for_summary, summarize_without_non_normal_findings
+
+    extract_function = modal.Function.from_name(MODAL_APP_NAME, MODAL_EXTRACT_FUNCTION_NAME)
+    extraction = extract_function.remote(pdf_bytes)
+    findings = extraction["findings"]
+    sources = extraction["sources"]
+    yield findings, SUMMARY_PENDING_TEXT, sources
+
+    if not findings.get("findings"):
         labpartner = modal.Cls.from_name(MODAL_APP_NAME, MODAL_CLASS_NAME)
         result = labpartner().run_pipeline.remote(pdf_bytes)
+        yield result["findings"], result["summary"], result["sources"]
+        return
 
-    return (
-        result["findings"],
-        result["summary"],
-        result["sources"],
-    )
+    if has_findings_for_summary(findings):
+        labpartner = modal.Cls.from_name(MODAL_APP_NAME, MODAL_CLASS_NAME)
+        summary = labpartner().summarize.remote(findings, {})
+    else:
+        summary = summarize_without_non_normal_findings(findings)
+
+    yield findings, summary, sources
 
 
 with gr.Blocks() as demo:

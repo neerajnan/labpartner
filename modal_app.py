@@ -7,6 +7,12 @@ MODEL_ID = "google/medgemma-27b-text-it"
 
 app = modal.App("labpartner")
 
+parser_image = (
+    modal.Image.debian_slim(python_version="3.13")
+    .pip_install("pdfplumber>=0.11.0")
+    .add_local_python_source("pipeline")
+)
+
 image = (
     modal.Image.debian_slim(python_version="3.13")
     .pip_install(
@@ -18,6 +24,38 @@ image = (
     )
     .add_local_python_source("pipeline", "pubmed")
 )
+
+
+def extract_pdf_findings_impl(pdf_bytes: bytes) -> dict:
+    from pipeline import (
+        extract_findings_from_report_text,
+        extract_text_from_pdf,
+        timed_step,
+    )
+
+    with timed_step("modal.extract_pipeline.total", pdf_bytes=len(pdf_bytes)):
+        with timed_step("modal.pdf.extract", pdf_bytes=len(pdf_bytes)):
+            report_text = extract_text_from_pdf(pdf_bytes)
+        with timed_step("modal.parser.extract", report_chars=len(report_text)):
+            findings = extract_findings_from_report_text(report_text)
+        finding_count = len(findings.get("findings", []))
+        print(
+            "timing step=modal.extract.result "
+            f"status=ok finding_count={finding_count}",
+            flush=True,
+        )
+    return {
+        "findings": findings,
+        "sources": "No external sources used.",
+        "report_text": report_text,
+    }
+
+
+@app.function(image=parser_image, timeout=120)
+def extract_pdf_findings(pdf_bytes: bytes) -> dict:
+    result = extract_pdf_findings_impl(pdf_bytes)
+    result.pop("report_text", None)
+    return result
 
 
 @app.cls(
@@ -115,27 +153,17 @@ class LabPartner:
     @modal.method()
     def run_pipeline(self, pdf_bytes: bytes) -> dict:
         from pipeline import (
-            extract_findings_from_report_text,
-            extract_text_from_pdf,
             has_findings_for_summary,
             summarize_without_non_normal_findings,
             timed_step,
         )
 
         with timed_step("modal.pipeline.total", pdf_bytes=len(pdf_bytes)):
-            with timed_step("modal.pdf.extract", pdf_bytes=len(pdf_bytes)):
-                report_text = extract_text_from_pdf(pdf_bytes)
-            with timed_step("modal.parser.extract", report_chars=len(report_text)):
-                findings = extract_findings_from_report_text(report_text)
+            extraction = extract_pdf_findings_impl(pdf_bytes)
+            findings = extraction["findings"]
             if not findings.get("findings"):
                 with timed_step("modal.parser.fallback_model"):
-                    findings = self._extract_findings_impl(report_text)
-            finding_count = len(findings.get("findings", []))
-            print(
-                "timing step=modal.extract.result "
-                f"status=ok finding_count={finding_count}",
-                flush=True,
-            )
+                    findings = self._extract_findings_impl(extraction["report_text"])
             if has_findings_for_summary(findings):
                 summary = self._summarize_impl(findings, {})
             else:
