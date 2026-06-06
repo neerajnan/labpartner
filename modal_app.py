@@ -95,7 +95,7 @@ class LabPartner:
 
         prompt = build_summary_prompt(findings, pubmed_context)
         with timed_step("modal.summary.generate", prompt_chars=len(prompt)):
-            raw_summary = self._generate(prompt, max_new_tokens=1400)
+            raw_summary = self._generate(prompt, max_new_tokens=700)
         with timed_step("modal.summary.clean", output_chars=len(raw_summary)):
             return clean_summary_output(raw_summary)
 

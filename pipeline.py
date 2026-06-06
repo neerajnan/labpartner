@@ -44,7 +44,21 @@ METADATA_MARKERS = (
     " years",
     " months",
 )
+METHOD_OR_NARRATIVE_MARKERS = (
+    "flowcytometry",
+    "flow cytometry",
+    "fluorescent",
+    "fluroscent",
+    "fluro",
+    "hydrodynamic",
+    "electrical",
+    "impedance",
+    "focusing",
+    "performed on",
+    "complete blood count is performed",
+)
 NUMBER_PATTERN = r"-?\d+(?:\.\d+)?"
+DOCTOR_SHARE_SENTENCE = "Please share this summary with your doctor."
 
 
 @contextmanager
@@ -112,12 +126,15 @@ def build_summary_prompt(findings: dict[str, Any], pubmed_context: dict[str, Any
 You have the following non-normal extracted findings. These are the ONLY findings to summarize:
 {findings_json}
 
+Return only the final patient-facing summary. Do not include examples, drafts, reasoning, analysis, placeholders, alternate versions, or markdown separators.
+
 Write a plain-language summary for the patient. For each abnormal or borderline finding:
 1. Explain what it measures
 2. Explain what the abnormal value means
 3. Mention what a doctor might want to investigate further
 
 Use simple language. Avoid jargon. Do not diagnose. Do not recommend treatment.
+Do not use bracketed placeholder text like "[what it means]".
 Do not invent concern for values marked normal or values that are within the stated reference range.
 Do not say that a low urine protein/creatinine ratio suggests kidney dysfunction unless the report explicitly flags it as abnormal or it is outside the stated reference range.
 End with: "Please share this summary with your doctor."
@@ -273,6 +290,8 @@ def should_parse_lab_line(line: str) -> bool:
     lowered = line.lower().strip()
     if lowered.startswith(SKIP_LINE_PREFIXES):
         return False
+    if looks_like_method_or_narrative(lowered):
+        return False
     return not looks_like_report_metadata(lowered)
 
 
@@ -322,9 +341,11 @@ def is_plausible_finding_name(name: str) -> bool:
     if len(name) < 2 or len(name) > 80:
         return False
     lowered = name.lower()
+    if lowered.startswith("("):
+        return False
     if lowered.startswith(SKIP_LINE_PREFIXES):
         return False
-    if ":" in name or looks_like_report_metadata(lowered):
+    if ":" in name or looks_like_report_metadata(lowered) or looks_like_method_or_narrative(lowered):
         return False
     return bool(re.search(r"[A-Za-z]", name))
 
@@ -339,6 +360,10 @@ def looks_like_report_metadata(text: str) -> bool:
     if re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", text):
         return True
     return False
+
+
+def looks_like_method_or_narrative(text: str) -> bool:
+    return any(marker in text for marker in METHOD_OR_NARRATIVE_MARKERS)
 
 
 def filter_findings_for_summary(findings: dict[str, Any]) -> dict[str, Any]:
@@ -392,11 +417,35 @@ def summarize_without_non_normal_findings(findings: dict[str, Any]) -> str:
 
 
 def clean_summary_output(summary: str) -> str:
-    """Remove leaked prompt/checklist fragments from the start of a model summary."""
-    lines = summary.splitlines()
-    while lines and is_leaked_instruction_line(lines[0]):
-        lines.pop(0)
-    return "\n".join(lines).lstrip()
+    """Remove leaked prompt/checklist/draft fragments from a model summary."""
+    text = summary.replace("\r\n", "\n").strip()
+    if not text:
+        return ""
+
+    response_markers = list(re.finditer(r"\*\*Your Response:\*\*|Your Response:", text, flags=re.IGNORECASE))
+    if response_markers:
+        text = text[response_markers[-1].end() :].lstrip()
+
+    lab_headings = list(re.finditer(r"\*\*Lab Results Summary\*\*", text, flags=re.IGNORECASE))
+    if lab_headings:
+        text = text[lab_headings[-1].start() :].lstrip()
+
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped in {"---", "***", "___"}:
+            continue
+        if is_leaked_instruction_line(stripped):
+            continue
+        lines.append(line)
+
+    cleaned = "\n".join(lines).lstrip()
+    sentence_index = cleaned.find(DOCTOR_SHARE_SENTENCE)
+    if sentence_index != -1:
+        cleaned = cleaned[: sentence_index + len(DOCTOR_SHARE_SENTENCE)]
+    while cleaned.startswith("\n"):
+        cleaned = cleaned[1:]
+    return cleaned.strip()
 
 
 def is_leaked_instruction_line(line: str) -> bool:
@@ -411,6 +460,17 @@ def is_leaked_instruction_line(line: str) -> bool:
         "one paragraph per finding",
         "format:",
         "end with:",
+        "here is the example format",
+        "example format",
+        "okay,",
+        "ok,",
+        "i need",
+        "i'll",
+        "i will",
+        "now i'll",
+        "now i will",
+        "let's",
+        "your response:",
     )
     return normalized.startswith(leaked_prefixes)
 

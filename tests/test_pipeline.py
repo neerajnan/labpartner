@@ -103,6 +103,28 @@ class PipelineTest(unittest.TestCase):
         self.assertNotIn("Printed By: 18818 Page 1 of 1 Printed On: 09/05/2026 16", names)
         self.assertEqual(names, ["PROTEIN CREATININE", "URINE PROTEIN", "URINE CREATININE"])
 
+    def test_parser_ignores_cbc_method_and_narrative_lines(self):
+        report_text = """
+        TC- WBC TOTAL 6.36 4.8-11
+        (Fluroscent flowcytometry/SF 103 /uL
+        NEUTROPHILS 70.2 % 40-70 %
+        EOSINOPHILS 0.5 % 1-6 %
+        (Hydrodynamic focusing/electrical 106 /uL
+        PLATELET COUNT 188 150-450
+        The complete blood count is performed on 6 part differential analyzer
+        """
+
+        findings = extract_findings_from_report_text(report_text)
+
+        names = [finding["name"] for finding in findings["findings"]]
+        self.assertEqual(
+            names,
+            ["TC- WBC TOTAL", "NEUTROPHILS", "EOSINOPHILS", "PLATELET COUNT"],
+        )
+        self.assertNotIn("(Fluroscent flowcytometry/SF", names)
+        self.assertNotIn("(Hydrodynamic focusing/electrical", names)
+        self.assertNotIn("The complete blood count is performed on", names)
+
     def test_mock_pipeline_flags_synthetic_lab_values(self):
         pdf_bytes = make_text_pdf("Patient: Example Person HbA1c 7.2% LDL 130 mg/dL eGFR 82")
 
@@ -295,6 +317,55 @@ class PipelineTest(unittest.TestCase):
         self.assertNotIn("A final", cleaned)
         self.assertNotIn("Use bullet points", cleaned)
         self.assertTrue(cleaned.startswith("**Patient Summary:**"))
+
+    def test_clean_summary_output_keeps_final_answer_only(self):
+        raw_summary = """
+Here is the example format:
+
+**Lab Results Summary**
+
+* **Finding 1 Name:** This measures [what it measures].
+
+**Overall Summary**
+This is an example.
+
+Please share this summary with your doctor.
+---
+
+**Your Response:**
+
+**Lab Results Summary**
+
+* **EOSINOPHILS:** This measures eosinophils. Your result is low. This might mean [what the abnormal value means].
+
+**Overall Summary**
+Draft summary.
+
+Please share this summary with your doctor.
+---
+Okay, I need to complete the Eosinophils section.
+---
+**Lab Results Summary**
+
+* **NEUTROPHILS:** This measures neutrophils. Your result of 70.2% is high compared to the normal range of 40-70%.
+* **EOSINOPHILS:** This measures eosinophils. Your result of 0.5% is low compared to the normal range of 1-6%.
+
+**Overall Summary**
+This summary covers the findings that were outside the normal range.
+
+Please share this summary with your doctor.
+---
+"""
+
+        cleaned = clean_summary_output(raw_summary)
+
+        self.assertTrue(cleaned.startswith("**Lab Results Summary**"))
+        self.assertIn("NEUTROPHILS", cleaned)
+        self.assertIn("EOSINOPHILS", cleaned)
+        self.assertNotIn("example format", cleaned.lower())
+        self.assertNotIn("Okay", cleaned)
+        self.assertNotIn("[what", cleaned)
+        self.assertTrue(cleaned.endswith("Please share this summary with your doctor."))
 
     def test_timed_step_logs_privacy_safe_metadata(self):
         output = StringIO()
