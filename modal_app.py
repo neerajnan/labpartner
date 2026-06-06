@@ -91,11 +91,16 @@ class LabPartner:
                 )
 
     def _summarize_impl(self, findings: dict, pubmed_context: dict) -> str:
-        from pipeline import build_summary_prompt, clean_summary_output, timed_step
+        from pipeline import build_summary_prompt, clean_summary_output, summary_token_budget, timed_step
 
         prompt = build_summary_prompt(findings, pubmed_context)
-        with timed_step("modal.summary.generate", prompt_chars=len(prompt)):
-            raw_summary = self._generate(prompt, max_new_tokens=700)
+        max_new_tokens = summary_token_budget(findings)
+        with timed_step(
+            "modal.summary.generate",
+            prompt_chars=len(prompt),
+            max_new_tokens=max_new_tokens,
+        ):
+            raw_summary = self._generate(prompt, max_new_tokens=max_new_tokens)
         with timed_step("modal.summary.clean", output_chars=len(raw_summary)):
             return clean_summary_output(raw_summary)
 

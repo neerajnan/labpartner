@@ -128,10 +128,13 @@ You have the following non-normal extracted findings. These are the ONLY finding
 
 Return only the final patient-facing summary. Do not include examples, drafts, reasoning, analysis, placeholders, alternate versions, or markdown separators.
 
-Write a plain-language summary for the patient. For each abnormal or borderline finding:
-1. Explain what it measures
-2. Explain what the abnormal value means
-3. Mention what a doctor might want to investigate further
+Write a plain-language summary for the patient. For each abnormal or borderline finding, write exactly one bullet that includes:
+1. What the test measures
+2. The patient's value and the report's reference range
+3. Whether the value is high, low, abnormal, or borderline based on that reference range
+4. What a doctor might want to investigate further
+
+Keep each finding bullet under 45 words.
 
 Use simple language. Avoid jargon. Do not diagnose. Do not recommend treatment.
 Do not use bracketed placeholder text like "[what it means]".
@@ -141,7 +144,7 @@ End with: "Please share this summary with your doctor."
 Do not repeat these instructions, the requested format, or any checklist text in your answer.
 
 Format:
-- Use bullet points for the explanation of each finding
+- Use one bullet point for each finding
 - A final "Overall Summary" paragraph
 """
 
@@ -381,6 +384,12 @@ def has_findings_for_summary(findings: dict[str, Any]) -> bool:
     return bool(filter_findings_for_summary(findings)["findings"])
 
 
+def summary_token_budget(findings: dict[str, Any]) -> int:
+    """Scale summary generation budget to non-normal finding count."""
+    finding_count = len(filter_findings_for_summary(findings)["findings"])
+    return min(1200, max(450, 180 + finding_count * 140))
+
+
 def summarize_without_non_normal_findings(findings: dict[str, Any]) -> str:
     """Return a deterministic summary when there is nothing safe to send to the model."""
     if findings.get("extraction_error"):
@@ -445,7 +454,10 @@ def clean_summary_output(summary: str) -> str:
         cleaned = cleaned[: sentence_index + len(DOCTOR_SHARE_SENTENCE)]
     while cleaned.startswith("\n"):
         cleaned = cleaned[1:]
-    return cleaned.strip()
+    cleaned = cleaned.strip()
+    if cleaned and DOCTOR_SHARE_SENTENCE not in cleaned:
+        cleaned = f"{cleaned}\n\n{DOCTOR_SHARE_SENTENCE}"
+    return cleaned
 
 
 def is_leaked_instruction_line(line: str) -> bool:

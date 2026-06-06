@@ -14,6 +14,7 @@ from pipeline import (
     pubmed_error_context,
     run_mock_pipeline,
     summarize_without_non_normal_findings,
+    summary_token_budget,
     timed_step,
 )
 
@@ -196,6 +197,46 @@ class PipelineTest(unittest.TestCase):
         self.assertNotIn("Urine Protein/Creatinine Ratio", prompt)
         self.assertIn("LDL", prompt)
 
+    def test_summary_prompt_requires_value_and_reference_range(self):
+        findings = normalize_findings(
+            {
+                "findings": [
+                    {
+                        "name": "NEUTROPHILS",
+                        "value": "70.2 %",
+                        "reference_range": "40-70 %",
+                        "report_flag": None,
+                        "status": "abnormal",
+                        "search_term": "neutrophils",
+                    }
+                ]
+            }
+        )
+
+        prompt = build_summary_prompt(findings, {})
+
+        self.assertIn("The patient's value and the report's reference range", prompt)
+        self.assertIn("Keep each finding bullet under 45 words", prompt)
+        self.assertIn('"value": "70.2 %"', prompt)
+        self.assertIn('"reference_range": "40-70 %"', prompt)
+
+    def test_summary_token_budget_scales_with_non_normal_findings(self):
+        findings = {
+            "findings": [
+                {
+                    "name": f"Finding {index}",
+                    "value": str(index),
+                    "reference_range": "0-1",
+                    "status": "abnormal",
+                }
+                for index in range(10)
+            ]
+        }
+
+        self.assertEqual(summary_token_budget({"findings": []}), 450)
+        self.assertEqual(summary_token_budget({"findings": findings["findings"][:2]}), 460)
+        self.assertEqual(summary_token_budget(findings), 1200)
+
     def test_missing_reference_range_does_not_infer_low_or_high(self):
         extracted = {
             "findings": [
@@ -365,6 +406,11 @@ Please share this summary with your doctor.
         self.assertNotIn("example format", cleaned.lower())
         self.assertNotIn("Okay", cleaned)
         self.assertNotIn("[what", cleaned)
+        self.assertTrue(cleaned.endswith("Please share this summary with your doctor."))
+
+    def test_clean_summary_output_appends_missing_doctor_line(self):
+        cleaned = clean_summary_output("**Lab Results Summary**\n\n* **LDL:** Your result was high.")
+
         self.assertTrue(cleaned.endswith("Please share this summary with your doctor."))
 
     def test_timed_step_logs_privacy_safe_metadata(self):
